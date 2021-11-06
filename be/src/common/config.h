@@ -305,10 +305,17 @@ CONF_mInt32(base_compaction_trace_threshold, "120");
 CONF_mInt32(cumulative_compaction_trace_threshold, "60");
 CONF_mInt32(update_compaction_trace_threshold, "20");
 
+// Max columns of each compaction group.
+// If the number of schema columns is greater than this, the columns will be divided into groups for vertical compaction.
+CONF_Int64(vertical_compaction_max_columns_per_group, "100");
+
 // Max row source mask memory bytes, default is 200M.
 // Should be smaller than compaction_mem_limit.
 // When the row source mask buffer exceeds this, it will be persisted to a temporary file on the disk.
 CONF_Int64(max_row_source_mask_memory_bytes, "209715200");
+
+// Max segment size, only used in vertical compaction currently.
+CONF_Int64(max_segment_size, "1073741824");
 
 // Port to start debug webserver on
 CONF_Int32(webserver_port, "8040");

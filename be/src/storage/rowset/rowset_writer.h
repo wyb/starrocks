@@ -67,6 +67,15 @@ class Column;
 //      // each chunk generates a segment
 //      writer->flush_chunk(chunk);
 //
+//      // 4. add chunk by columns
+//      for (column_group : column_groups) {
+//          writer->add_chunk_by_columns(chunk, column_group, is_key);
+//          writer->add_chunk_by_columns(chunk, column_group, is_key);
+//          ...
+//          writer->flush_columns(column_group, is_key);
+//      }
+//      writer->final_flush();
+//
 //      // finish
 //      writer->build();
 //
@@ -89,6 +98,13 @@ public:
         return OLAP_ERR_FUNC_NOT_IMPLEMENTED;
     }
 
+    // Used for vertical compaction
+    // |Chunk| contains partial columns corresponding to |column_indexes|.
+    virtual OLAPStatus add_chunk_by_columns(const vectorized::Chunk& chunk, const std::vector<uint32_t>& column_indexes,
+                                            bool is_key) {
+        return OLAP_ERR_FUNC_NOT_IMPLEMENTED;
+    }
+
     // This routine is free to modify the content of |chunk|.
     virtual OLAPStatus flush_chunk(const vectorized::Chunk& chunk) = 0;
 
@@ -105,6 +121,14 @@ public:
     // explicit flush all buffered rows into segment file.
     // note that `add_row` could also trigger flush when certain conditions are met
     virtual OLAPStatus flush() = 0;
+
+    // Used for vertical compaction
+    // flush columns data and index
+    virtual OLAPStatus flush_columns(const std::vector<uint32_t>& column_indexes, bool is_key) {
+        return OLAP_ERR_FUNC_NOT_IMPLEMENTED;
+    }
+    // flush segments footer
+    virtual OLAPStatus final_flush() { return OLAP_ERR_FUNC_NOT_IMPLEMENTED; }
 
     // finish building and return pointer to the built rowset (guaranteed to be inited).
     // return nullptr when failed

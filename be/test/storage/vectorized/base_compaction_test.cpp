@@ -117,9 +117,86 @@ public:
         }
     }
 
+    void do_compaction() {
+        config::storage_format_version = 2;
+        create_tablet_schema(UNIQUE_KEYS);
+
+        RowsetWriterContext rowset_writer_context(kDataFormatUnknown, config::storage_format_version);
+        create_rowset_writer_context(&rowset_writer_context);
+        std::unique_ptr<RowsetWriter> _rowset_writer;
+        ASSERT_TRUE(RowsetFactory::create_rowset_writer(rowset_writer_context, &_rowset_writer).ok());
+
+        rowset_writer_add_rows(_rowset_writer);
+
+        _rowset_writer->flush();
+        RowsetSharedPtr src_rowset = _rowset_writer->build();
+        ASSERT_TRUE(src_rowset != nullptr);
+        RowsetId src_rowset_id;
+        src_rowset_id.init(10000);
+        ASSERT_EQ(src_rowset_id, src_rowset->rowset_id());
+        ASSERT_EQ(1024, src_rowset->num_rows());
+
+        TabletMetaSharedPtr tablet_meta(new TabletMeta());
+        create_tablet_meta(tablet_meta.get());
+        tablet_meta->add_rs_meta(src_rowset->rowset_meta());
+
+        {
+            RowsetId src_rowset_id;
+            src_rowset_id.init(10001);
+            rowset_writer_context.rowset_id = src_rowset_id;
+            rowset_writer_context.version =
+                    Version(rowset_writer_context.version.second + 1, rowset_writer_context.version.second + 2);
+
+            std::unique_ptr<RowsetWriter> _rowset_writer;
+            ASSERT_TRUE(RowsetFactory::create_rowset_writer(rowset_writer_context, &_rowset_writer).ok());
+
+            rowset_writer_add_rows(_rowset_writer);
+
+            _rowset_writer->flush();
+            RowsetSharedPtr src_rowset = _rowset_writer->build();
+            ASSERT_TRUE(src_rowset != nullptr);
+            ASSERT_EQ(src_rowset_id, src_rowset->rowset_id());
+            ASSERT_EQ(1024, src_rowset->num_rows());
+
+            tablet_meta->add_rs_meta(src_rowset->rowset_meta());
+        }
+
+        {
+            RowsetId src_rowset_id;
+            src_rowset_id.init(10002);
+            rowset_writer_context.rowset_id = src_rowset_id;
+            rowset_writer_context.version =
+                    Version(rowset_writer_context.version.second + 1, rowset_writer_context.version.second + 2);
+
+            std::unique_ptr<RowsetWriter> _rowset_writer;
+            ASSERT_TRUE(RowsetFactory::create_rowset_writer(rowset_writer_context, &_rowset_writer).ok());
+
+            rowset_writer_add_rows(_rowset_writer);
+
+            _rowset_writer->flush();
+            RowsetSharedPtr src_rowset = _rowset_writer->build();
+            ASSERT_TRUE(src_rowset != nullptr);
+            ASSERT_EQ(src_rowset_id, src_rowset->rowset_id());
+            ASSERT_EQ(1024, src_rowset->num_rows());
+
+            tablet_meta->add_rs_meta(src_rowset->rowset_meta());
+        }
+
+        TabletSharedPtr tablet = Tablet::create_tablet_from_meta(
+                tablet_meta, starrocks::ExecEnv::GetInstance()->storage_engine()->get_stores()[0]);
+        tablet->init();
+        tablet->calculate_cumulative_point();
+
+        BaseCompaction base_compaction(_compaction_mem_tracker.get(), tablet);
+
+        ASSERT_TRUE(base_compaction.compact().ok());
+    }
+
     void SetUp() override {
         config::max_compaction_concurrency = 1;
         Compaction::init(config::max_compaction_concurrency);
+
+        _vertical_compaction_max_columns_per_group = config::vertical_compaction_max_columns_per_group;
 
         config::storage_root_path = std::filesystem::current_path().string() + "/data_test_base_compaction";
         FileUtils::remove_all(config::storage_root_path);
@@ -155,6 +232,8 @@ public:
         if (FileUtils::check_exist(config::storage_root_path)) {
             ASSERT_TRUE(FileUtils::remove_all(config::storage_root_path).ok());
         }
+
+        config::vertical_compaction_max_columns_per_group = _vertical_compaction_max_columns_per_group;
     }
 
 protected:
@@ -163,6 +242,9 @@ protected:
     std::string _schema_hash_path;
     std::unique_ptr<MemTracker> _compaction_mem_tracker;
     std::unique_ptr<MemPool> _mem_pool;
+
+    int64_t _vertical_compaction_min_columns;
+    int64_t _vertical_compaction_max_columns_per_group;
 };
 
 TEST_F(BaseCompactionTest, test_init_succeeded) {
@@ -238,78 +320,13 @@ TEST_F(BaseCompactionTest, test_input_rowsets_EQ_2) {
 }
 
 TEST_F(BaseCompactionTest, test_compact_succeed) {
-    config::storage_format_version = 2;
-    create_tablet_schema(UNIQUE_KEYS);
+    do_compaction();
+}
 
-    RowsetWriterContext rowset_writer_context(kDataFormatUnknown, config::storage_format_version);
-    create_rowset_writer_context(&rowset_writer_context);
-    std::unique_ptr<RowsetWriter> _rowset_writer;
-    ASSERT_TRUE(RowsetFactory::create_rowset_writer(rowset_writer_context, &_rowset_writer).ok());
+TEST_F(BaseCompactionTest, test_vertical_compact_succeed) {
+    config::vertical_compaction_max_columns_per_group = 1;
 
-    rowset_writer_add_rows(_rowset_writer);
-
-    _rowset_writer->flush();
-    RowsetSharedPtr src_rowset = _rowset_writer->build();
-    ASSERT_TRUE(src_rowset != nullptr);
-    RowsetId src_rowset_id;
-    src_rowset_id.init(10000);
-    ASSERT_EQ(src_rowset_id, src_rowset->rowset_id());
-    ASSERT_EQ(1024, src_rowset->num_rows());
-
-    TabletMetaSharedPtr tablet_meta(new TabletMeta());
-    create_tablet_meta(tablet_meta.get());
-    tablet_meta->add_rs_meta(src_rowset->rowset_meta());
-
-    {
-        RowsetId src_rowset_id;
-        src_rowset_id.init(10001);
-        rowset_writer_context.rowset_id = src_rowset_id;
-        rowset_writer_context.version =
-                Version(rowset_writer_context.version.second + 1, rowset_writer_context.version.second + 2);
-
-        std::unique_ptr<RowsetWriter> _rowset_writer;
-        ASSERT_TRUE(RowsetFactory::create_rowset_writer(rowset_writer_context, &_rowset_writer).ok());
-
-        rowset_writer_add_rows(_rowset_writer);
-
-        _rowset_writer->flush();
-        RowsetSharedPtr src_rowset = _rowset_writer->build();
-        ASSERT_TRUE(src_rowset != nullptr);
-        ASSERT_EQ(src_rowset_id, src_rowset->rowset_id());
-        ASSERT_EQ(1024, src_rowset->num_rows());
-
-        tablet_meta->add_rs_meta(src_rowset->rowset_meta());
-    }
-
-    {
-        RowsetId src_rowset_id;
-        src_rowset_id.init(10002);
-        rowset_writer_context.rowset_id = src_rowset_id;
-        rowset_writer_context.version =
-                Version(rowset_writer_context.version.second + 1, rowset_writer_context.version.second + 2);
-
-        std::unique_ptr<RowsetWriter> _rowset_writer;
-        ASSERT_TRUE(RowsetFactory::create_rowset_writer(rowset_writer_context, &_rowset_writer).ok());
-
-        rowset_writer_add_rows(_rowset_writer);
-
-        _rowset_writer->flush();
-        RowsetSharedPtr src_rowset = _rowset_writer->build();
-        ASSERT_TRUE(src_rowset != nullptr);
-        ASSERT_EQ(src_rowset_id, src_rowset->rowset_id());
-        ASSERT_EQ(1024, src_rowset->num_rows());
-
-        tablet_meta->add_rs_meta(src_rowset->rowset_meta());
-    }
-
-    TabletSharedPtr tablet = Tablet::create_tablet_from_meta(
-            tablet_meta, starrocks::ExecEnv::GetInstance()->storage_engine()->get_stores()[0]);
-    tablet->init();
-    tablet->calculate_cumulative_point();
-
-    BaseCompaction base_compaction(_compaction_mem_tracker.get(), tablet);
-
-    ASSERT_TRUE(base_compaction.compact().ok());
+    do_compaction();
 }
 
 } // namespace starrocks::vectorized

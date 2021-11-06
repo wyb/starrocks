@@ -76,12 +76,18 @@ public:
     Status append_row(const RowType& row);
 
     Status append_chunk(const vectorized::Chunk& chunk);
+    // Used for vertical compaction
+    Status append_chunk(const vectorized::Chunk& chunk, const std::vector<uint32_t>& column_indexes, bool is_key);
 
     uint64_t estimate_segment_size();
 
-    uint32_t num_rows_written() const { return _row_count; }
+    uint32_t num_rows_written() const { return _num_rows_written; }
+    uint32_t num_rows() const { return _num_rows; }
 
     Status finalize(uint64_t* segment_file_size, uint64_t* index_size);
+    // Used for vertical compaction
+    Status finalize_columns(const std::vector<uint32_t>& column_indexes, bool is_key, uint64_t* index_size);
+    Status finalize_footer(uint64_t* segment_file_size);
 
     uint32_t segment_id() const { return _segment_id; }
 
@@ -107,7 +113,8 @@ private:
     SegmentFooterPB _footer;
     std::unique_ptr<ShortKeyIndexBuilder> _index_builder;
     std::vector<std::unique_ptr<ColumnWriter>> _column_writers;
-    uint32_t _row_count = 0;
+    uint32_t _num_rows_written = 0;
+    uint32_t _num_rows = 0;
 
     vectorized::DictColumnsValidMap _global_dict_columns_valid_info;
 };

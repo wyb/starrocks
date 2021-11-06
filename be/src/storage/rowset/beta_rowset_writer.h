@@ -54,6 +54,10 @@ public:
 
     OLAPStatus add_chunk_with_rssid(const vectorized::Chunk& chunk, const vector<uint32_t>& rssid) override;
 
+    // Used for vertical compaction
+    OLAPStatus add_chunk_by_columns(const vectorized::Chunk& chunk, const std::vector<uint32_t>& column_indexes,
+                                    bool is_key) override;
+
     OLAPStatus flush_chunk(const vectorized::Chunk& chunk) override;
 
     OLAPStatus flush_chunk_with_deletes(const vectorized::Chunk& upserts, const vectorized::Column& deletes) override;
@@ -65,6 +69,10 @@ public:
                                                    const SchemaMapping& schema_mapping) override;
 
     OLAPStatus flush() override;
+
+    // Used for vertical compaction
+    OLAPStatus flush_columns(const std::vector<uint32_t>& column_indexes, bool is_key) override;
+    OLAPStatus final_flush() override;
 
     RowsetSharedPtr build() override;
 
@@ -83,6 +91,8 @@ private:
     std::unique_ptr<segment_v2::SegmentWriter> _create_segment_writer();
 
     OLAPStatus _flush_segment_writer(std::unique_ptr<segment_v2::SegmentWriter>* segment_writer);
+    OLAPStatus _flush_segment_writer_by_columns(std::unique_ptr<segment_v2::SegmentWriter>* segment_writer,
+                                                const std::vector<uint32_t>& column_indexes, bool is_key);
     Status _flush_src_rssids();
 
     Status _final_merge();
@@ -97,6 +107,10 @@ private:
     std::unique_ptr<segment_v2::SegmentWriter> _segment_writer;
     // mutex lock for vectorized add chunk and flush
     std::mutex _lock;
+
+    // used for vertical compaction
+    std::vector<std::unique_ptr<segment_v2::SegmentWriter>> _segment_writers;
+    size_t _current_writer_index = 0;
 
     // counters and statistics maintained during data write
     int64_t _num_rows_written;

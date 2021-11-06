@@ -221,6 +221,44 @@ OLAPStatus BetaRowsetWriter::flush() {
     return OLAP_SUCCESS;
 }
 
+OLAPStatus BetaRowsetWriter::flush_columns(const std::vector<uint32_t>& column_indexes, bool is_key) {
+    DCHECK(_segment_writers[_current_writer_index]);
+    RETURN_NOT_OK(_flush_segment_writer_by_columns(&_segment_writers[_current_writer_index], column_indexes, is_key));
+    _current_writer_index = 0;
+    return OLAP_SUCCESS;
+}
+
+OLAPStatus BetaRowsetWriter::final_flush() {
+    for (auto& segment_writer : _segment_writers) {
+        uint64_t segment_size = 0;
+        Status s = segment_writer->finalize_footer(&segment_size);
+        if (!s.ok()) {
+            LOG(WARNING) << "Fail to finalize segment footer, " << s.to_string();
+            return OLAP_ERR_WRITER_DATA_WRITE_ERROR;
+        }
+        {
+            std::lock_guard<std::mutex> l(_lock);
+            _total_data_size += segment_size;
+        }
+
+        // check global_dict efficacy
+        const auto& seg_global_dict_columns_valid_info = segment_writer->global_dict_columns_valid_info();
+        for (const auto& it : seg_global_dict_columns_valid_info) {
+            if (!it.second) {
+                _global_dict_columns_valid_info[it.first] = false;
+            } else {
+                if (const auto& iter = _global_dict_columns_valid_info.find(it.first);
+                    iter == _global_dict_columns_valid_info.end()) {
+                    _global_dict_columns_valid_info[it.first] = true;
+                }
+            }
+        }
+
+        segment_writer.reset();
+    }
+    return OLAP_SUCCESS;
+}
+
 // why: when the data is large, multi segment files created, may be OVERLAPPINGed.
 // what: do final merge for NONOVERLAPPING state among segment files
 // when: segment files number larger than one, no delete files(for now, ignore it when just one segment)
@@ -485,6 +523,22 @@ OLAPStatus BetaRowsetWriter::_flush_segment_writer(std::unique_ptr<segment_v2::S
     return OLAP_SUCCESS;
 }
 
+OLAPStatus BetaRowsetWriter::_flush_segment_writer_by_columns(
+        std::unique_ptr<segment_v2::SegmentWriter>* segment_writer, const std::vector<uint32_t>& column_indexes,
+        bool is_key) {
+    uint64_t index_size = 0;
+    Status s = (*segment_writer)->finalize_columns(column_indexes, is_key, &index_size);
+    if (!s.ok()) {
+        LOG(WARNING) << "Fail to finalize segment columns, " << s.to_string();
+        return OLAP_ERR_WRITER_DATA_WRITE_ERROR;
+    }
+    {
+        std::lock_guard<std::mutex> l(_lock);
+        _total_index_size += index_size;
+    }
+    return OLAP_SUCCESS;
+}
+
 Status BetaRowsetWriter::_flush_src_rssids() {
     auto path = BetaRowset::segment_srcrssid_file_path(_context.rowset_path_prefix, _context.rowset_id,
                                                        _segment_writer->segment_id());
@@ -552,6 +606,78 @@ OLAPStatus BetaRowsetWriter::add_chunk_with_rssid(const vectorized::Chunk& chunk
         return OLAP_ERR_WRITER_DATA_WRITE_ERROR;
     }
     _num_rows_written += chunk.num_rows();
+    return OLAP_SUCCESS;
+}
+
+OLAPStatus BetaRowsetWriter::add_chunk_by_columns(const vectorized::Chunk& chunk,
+                                                  const std::vector<uint32_t>& column_indexes, bool is_key) {
+    auto segment_writer_add_chunk = [&](const vectorized::Chunk& chunk, const std::vector<uint32_t>& column_indexes,
+                                        bool is_key) -> OLAPStatus {
+        auto s = _segment_writers[_current_writer_index]->append_chunk(chunk, column_indexes, is_key);
+        if (!s.ok()) {
+            LOG(WARNING) << "Fail to append chunk by columns. st=" << s.to_string();
+            return OLAP_ERR_WRITER_DATA_WRITE_ERROR;
+        }
+        return OLAP_SUCCESS;
+    };
+
+    size_t chunk_num_rows = chunk.num_rows();
+    if (_segment_writers.empty()) {
+        DCHECK(is_key);
+        _segment_writers.emplace_back(std::move(_create_segment_writer()));
+        _current_writer_index = 0;
+        RETURN_NOT_OK(segment_writer_add_chunk(chunk, column_indexes, is_key));
+    } else if (is_key) {
+        // key columns
+        if (_segment_writers[_current_writer_index]->num_rows_written() + chunk_num_rows >=
+            _context.max_rows_per_segment) {
+            RETURN_NOT_OK(
+                    _flush_segment_writer_by_columns(&_segment_writers[_current_writer_index], column_indexes, is_key));
+            _segment_writers.emplace_back(std::move(_create_segment_writer()));
+            ++_current_writer_index;
+        }
+        RETURN_NOT_OK(segment_writer_add_chunk(chunk, column_indexes, is_key));
+    } else {
+        // non key columns
+        uint32_t num_rows_written = _segment_writers[_current_writer_index]->num_rows_written();
+        uint32_t segment_num_rows = _segment_writers[_current_writer_index]->num_rows();
+        DCHECK_LE(num_rows_written, segment_num_rows);
+        if (num_rows_written + chunk_num_rows <= segment_num_rows) {
+            RETURN_NOT_OK(segment_writer_add_chunk(chunk, column_indexes, is_key));
+        } else {
+            // split into multi chunks and write into multi segments
+            auto write_chunk = chunk.clone_empty();
+            size_t num_left_rows = chunk_num_rows;
+            size_t offset = 0;
+            while (num_left_rows > 0) {
+                if (segment_num_rows == num_rows_written) {
+                    RETURN_NOT_OK(_flush_segment_writer_by_columns(&_segment_writers[_current_writer_index],
+                                                                   column_indexes, is_key));
+                    ++_current_writer_index;
+                    num_rows_written = _segment_writers[_current_writer_index]->num_rows_written();
+                    segment_num_rows = _segment_writers[_current_writer_index]->num_rows();
+                }
+
+                size_t write_size = segment_num_rows - num_rows_written;
+                if (write_size > num_left_rows) {
+                    write_size = num_left_rows;
+                }
+                write_chunk->append(chunk, offset, write_size);
+                RETURN_NOT_OK(segment_writer_add_chunk(*write_chunk, column_indexes, is_key));
+                write_chunk->reset();
+                num_left_rows -= write_size;
+                offset += write_size;
+                num_rows_written = _segment_writers[_current_writer_index]->num_rows_written();
+            }
+            DCHECK_EQ(0, num_left_rows);
+            DCHECK_EQ(offset, chunk_num_rows);
+        }
+    }
+
+    if (is_key) {
+        _num_rows_written += chunk_num_rows;
+    }
+    _total_row_size += chunk.bytes_usage();
     return OLAP_SUCCESS;
 }
 

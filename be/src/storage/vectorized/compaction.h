@@ -18,6 +18,13 @@ namespace starrocks::vectorized {
 
 class DataDir;
 
+enum CompactionAlgorithm {
+    // compaction by all columns together.
+    HORIZONTAL = 0,
+    // compaction by column group, for tablet with many columns.
+    VERTICAL = 1
+};
+
 // This class is a base class for compaction.
 // The entrance of this class is compact()
 // Any compaction should go through four procedures.
@@ -55,11 +62,12 @@ protected:
     // merge rows from vectorized reader and write into `_output_rs_writer`.
     // return Status::OK() and set statistics into `*stats_output`.
     // return others on error
-    Status merge_rowsets(int64_t mem_limit, Statistics* stats_output);
+    Status merge_rowsets_horizontal(int64_t mem_limit, Statistics* stats_output);
+    Status merge_rowsets_vertical(Statistics* stats_output);
 
     Status modify_rowsets();
 
-    Status construct_output_rowset_writer();
+    Status construct_output_rowset_writer(uint32_t max_rows_per_segment);
 
     Status check_version_continuity(const std::vector<RowsetSharedPtr>& rowsets);
     Status check_correctness(const Statistics& stats);
@@ -67,9 +75,15 @@ protected:
     // semaphore used to limit the concurrency of running compaction tasks
     static Semaphore _concurrency_sem;
 
+private:
+    CompactionAlgorithm _choose_compaction_algorithm(int64_t max_columns_per_group, uint32_t source_num) const;
+
 protected:
     MemTracker* _mem_tracker = nullptr;
     TabletSharedPtr _tablet;
+    // used for vertical compaction
+    // the first group is key columns
+    std::vector<std::vector<uint32_t>> _column_groups;
 
     std::vector<RowsetSharedPtr> _input_rowsets;
     int64_t _input_rowsets_size;
