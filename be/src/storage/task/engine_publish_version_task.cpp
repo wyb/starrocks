@@ -40,6 +40,10 @@ OLAPStatus EnginePublishVersionTask::finish() {
     OLAPStatus res = OLAP_SUCCESS;
     int64_t transaction_id = _publish_version_req.transaction_id;
 
+    std::vector<int64_t> partition_ids;
+    std::vector<TabletSharedPtr> tablets;
+    Versions versions;
+    std::vector<RowsetSharedPtr> rowsets;
     // each partition
     for (auto& par_ver_info : _publish_version_req.partition_version_infos) {
         int64_t partition_id = par_ver_info.partition_id;
@@ -91,18 +95,23 @@ OLAPStatus EnginePublishVersionTask::finish() {
                         << " rowset: " << rowset->rowset_id().to_string() << " version: " << version.second;
                 publish_status = StorageEngine::instance()->txn_manager()->publish_txn2(transaction_id, partition_id,
                                                                                         tablet, version.second);
+                if (publish_status != OLAP_SUCCESS) {
+                    LOG(WARNING) << "failed to publish version. rowset_id=" << rowset->rowset_id()
+                                 << ", tablet_id=" << tablet_info.tablet_id << ", txn_id=" << transaction_id;
+                    _error_tablet_ids->push_back(tablet_info.tablet_id);
+                    res = publish_status;
+                    continue;
+                }
             } else {
-                publish_status = StorageEngine::instance()->txn_manager()->publish_txn(partition_id, tablet,
-                                                                                       transaction_id, version);
-            }
-            if (publish_status != OLAP_SUCCESS) {
-                LOG(WARNING) << "failed to publish version. rowset_id=" << rowset->rowset_id()
-                             << ", tablet_id=" << tablet_info.tablet_id << ", txn_id=" << transaction_id;
-                _error_tablet_ids->push_back(tablet_info.tablet_id);
-                res = publish_status;
-                continue;
+                //publish_status = StorageEngine::instance()->txn_manager()->publish_txn(partition_id, tablet,
+                //                                                                       transaction_id, version);
+                partition_ids.emplace_back(partition_id);
+                tablets.emplace_back(tablet);
+                versions.emplace_back(version);
+                rowsets.emplace_back(rowset);
             }
 
+            /*
             if (tablet->keys_type() != KeysType::PRIMARY_KEYS) {
                 // add visible rowset to tablet
                 auto st = tablet->add_inc_rowset(rowset);
@@ -118,6 +127,7 @@ OLAPStatus EnginePublishVersionTask::finish() {
                     continue;
                 }
             }
+             */
             partition_related_tablet_infos.erase(tablet_info);
             VLOG(1) << "publish version successfully on tablet. tablet=" << tablet->full_name()
                     << ", transaction_id=" << transaction_id << ", version=" << version.first
@@ -142,6 +152,32 @@ OLAPStatus EnginePublishVersionTask::finish() {
                     // pull rowset meta using tablet_id + txn_id
                     // it depends on the tablet type to download file or only meta
                 }
+            }
+        }
+    }
+
+    OLAPStatus publish_status = StorageEngine::instance()->txn_manager()->publish_txns(partition_ids, tablets, transaction_id, versions);
+    if (publish_status != OLAP_SUCCESS) {
+        LOG(WARNING) << "fail to add visible rowset to tablet. res=" << publish_status;
+        res = publish_status;
+    }
+
+    for (int i = 0; i < tablets.size(); ++i) {
+        TabletSharedPtr& tablet = tablets[i];
+        RowsetSharedPtr& rowset = rowsets[i];
+        if (tablet->keys_type() != KeysType::PRIMARY_KEYS) {
+            // add visible rowset to tablet
+            auto st = tablet->add_inc_rowset(rowset);
+            publish_status =
+                    st.ok() ? OLAP_SUCCESS
+                            : (st.is_already_exist() ? OLAP_ERR_PUSH_VERSION_ALREADY_EXIST : OLAP_ERR_OTHER_ERROR);
+            if (publish_status != OLAP_SUCCESS && publish_status != OLAP_ERR_PUSH_VERSION_ALREADY_EXIST) {
+                LOG(WARNING) << "fail to add visible rowset to tablet. rowset_id=" << rowset->rowset_id()
+                             << ", tablet_id=" << tablet->tablet_id() << ", txn_id=" << transaction_id
+                             << ", res=" << publish_status;
+                _error_tablet_ids->push_back(tablet->tablet_id());
+                res = publish_status;
+                continue;
             }
         }
     }

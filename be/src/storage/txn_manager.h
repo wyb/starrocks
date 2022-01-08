@@ -79,6 +79,8 @@ public:
 
     OLAPStatus publish_txn(TPartitionId partition_id, const TabletSharedPtr& tablet, TTransactionId transaction_id,
                            const Version& version);
+    OLAPStatus publish_txns(const std::vector<TPartitionId>& partition_ids, const std::vector<TabletSharedPtr>& tablets,
+                            TTransactionId transaction_id, const Versions& versions);
 
     // publish_txn for updatable tablet
     OLAPStatus publish_txn2(TTransactionId transaction_id, TPartitionId partition_id, const TabletSharedPtr& tablet,

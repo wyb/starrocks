@@ -38,6 +38,10 @@ public:
     static Status save(KVStore* meta, const TabletUid& tablet_uid, const RowsetId& rowset_id,
                        const RowsetMetaPB& rowset_meta_pb);
 
+    static Status save_batch(KVStore* meta, const std::vector<TabletUid>& tablet_uids,
+                             const std::vector<RowsetId>& rowset_ids,
+                             const std::vector<RowsetMetaPB>& rowset_meta_pbs);
+
     static Status remove(KVStore* meta, const TabletUid& tablet_uid, const RowsetId& rowset_id);
 
     static string get_rowset_meta_key(const TabletUid& tablet_uid, const RowsetId& rowset_id);

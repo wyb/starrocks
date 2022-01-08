@@ -51,6 +51,25 @@ Status RowsetMetaManager::save(KVStore* meta, const TabletUid& tablet_uid, const
     return meta->put(META_COLUMN_FAMILY_INDEX, key, value);
 }
 
+Status RowsetMetaManager::save_batch(KVStore* meta, const std::vector<TabletUid>& tablet_uids,
+                                     const std::vector<RowsetId>& rowset_ids,
+                                     const std::vector<RowsetMetaPB>& rowset_meta_pbs) {
+    WriteBatch batch;
+    auto handle = meta->handle(META_COLUMN_FAMILY_INDEX);
+    for (int i = 0; i < tablet_uids.size(); ++i) {
+        std::string key = get_rowset_meta_key(tablet_uids[i], rowset_ids[i]);
+        std::string value;
+        bool ret = rowset_meta_pbs[i].SerializeToString(&value);
+        if (!ret) {
+            std::string error_msg = "serialize rowset pb failed. rowset id:" + key;
+            LOG(WARNING) << error_msg;
+            return Status::InternalError("fail to serialize rowset meta");
+        }
+        rocksdb::Status st = batch.Put(handle, key, value);
+    }
+    return meta->write_batch(&batch);
+}
+
 Status RowsetMetaManager::remove(KVStore* meta, const TabletUid& tablet_uid, const RowsetId& rowset_id) {
     std::string key = get_rowset_meta_key(tablet_uid, rowset_id);
     return meta->remove(META_COLUMN_FAMILY_INDEX, key);

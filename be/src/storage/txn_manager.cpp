@@ -271,6 +271,79 @@ OLAPStatus TxnManager::publish_txn(KVStore* meta, TPartitionId partition_id, TTr
     }
 }
 
+OLAPStatus TxnManager::publish_txns(const std::vector<TPartitionId>& partition_ids,
+                                    const std::vector<TabletSharedPtr>& tablets,
+                                    TTransactionId transaction_id, const Versions& versions) {
+    RowsetSharedPtr rowset_ptr = nullptr;
+    std::vector<TabletUid> tablet_uids;
+    std::vector<RowsetId> rowset_ids;
+    std::vector<RowsetMetaPB> rowset_meta_pbs;
+    std::lock_guard txn_lock(_get_txn_lock(transaction_id));
+    for (int i = 0; i < tablets.size(); ++i) {
+        const TabletSharedPtr &tablet = tablets[i];
+        pair<int64_t, int64_t> key(partition_ids[i], transaction_id);
+        TabletInfo tablet_info(tablet->tablet_id(), tablet->schema_hash(), tablet->tablet_uid());
+        {
+            std::shared_lock rlock(_get_txn_map_lock(transaction_id));
+            txn_tablet_map_t &txn_tablet_map = _get_txn_tablet_map(transaction_id);
+            auto it = txn_tablet_map.find(key);
+            if (it != txn_tablet_map.end()) {
+                auto load_itr = it->second.find(tablet_info);
+                if (load_itr != it->second.end()) {
+                    // found load for txn,tablet
+                    // case 1: user commit rowset, then the load id must be equal
+                    TabletTxnInfo &load_info = load_itr->second;
+                    rowset_ptr = load_info.rowset;
+                }
+            }
+        }
+
+        // save meta need access disk, it maybe very slow, so that it is not in global txn lock
+        // it is under a single txn lock
+        if (rowset_ptr != nullptr) {
+            // TODO(ygl): rowset is already set version here, memory is changed, if save failed
+            // it maybe a fatal error
+            rowset_ptr->make_visible(versions[i]);
+            auto &rowset_meta_pb = rowset_ptr->rowset_meta()->get_meta_pb();
+            tablet_uids.emplace_back(tablets[i]->tablet_uid());
+            rowset_ids.emplace_back(rowset_ptr->rowset_id());
+            rowset_meta_pbs.emplace_back(rowset_meta_pb);
+        } else {
+            return OLAP_ERR_TRANSACTION_NOT_EXIST;
+        }
+    }
+
+    Status st = RowsetMetaManager::save_batch(tablets[0]->data_dir()->get_meta(), tablet_uids, rowset_ids,
+                                              rowset_meta_pbs);
+    if (!st.ok()) {
+        LOG(WARNING) << "save committed rowset failed. when publish txn id:" << transaction_id;
+        return OLAP_ERR_ROWSET_SAVE_FAILED;
+    }
+
+    for (int i = 0; i < tablets.size(); ++i) {
+        const TabletSharedPtr &tablet = tablets[i];
+        pair<int64_t, int64_t> key(partition_ids[i], transaction_id);
+        TabletInfo tablet_info(tablet->tablet_id(), tablet->schema_hash(), tablet->tablet_uid());
+        {
+            std::unique_lock wrlock(_get_txn_map_lock(transaction_id));
+            txn_tablet_map_t& txn_tablet_map = _get_txn_tablet_map(transaction_id);
+            auto it = txn_tablet_map.find(key);
+            if (it != txn_tablet_map.end()) {
+                it->second.erase(tablet_info);
+                LOG(INFO) << "publish txn successfully."
+                          << " partition_id: " << key.first << ", txn_id: " << key.second
+                          << ", tablet: " << tablet_info.to_string() << ", rowsetid: " << rowset_ptr->rowset_id()
+                          << ", version: " << versions[i].first << "," << versions[i].second;
+                if (it->second.empty()) {
+                    txn_tablet_map.erase(it);
+                    _clear_txn_partition_map_unlocked(transaction_id, partition_ids[i]);
+                }
+            }
+        }
+    }
+    return OLAP_SUCCESS;
+}
+
 OLAPStatus TxnManager::publish_txn2(TTransactionId transaction_id, TPartitionId partition_id,
                                     const TabletSharedPtr& tablet, int64_t version) {
     pair<int64_t, int64_t> key(partition_id, transaction_id);
