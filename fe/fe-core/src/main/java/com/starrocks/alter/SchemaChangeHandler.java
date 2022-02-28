@@ -65,7 +65,7 @@ import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Replica.ReplicaState;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
@@ -1175,7 +1175,7 @@ public class SchemaChangeHandler extends AlterHandler {
             long shadowIndexId = catalog.getNextId();
 
             // create SHADOW index for each partition
-            List<Tablet> addedTablets = Lists.newArrayList();
+            List<LocalTablet> addedTablets = Lists.newArrayList();
             for (Partition partition : olapTable.getPartitions()) {
                 long partitionId = partition.getId();
                 TStorageMedium medium = olapTable.getPartitionInfo().getDataProperty(partitionId).getStorageMedium();
@@ -1185,11 +1185,11 @@ public class SchemaChangeHandler extends AlterHandler {
                 TabletMeta shadowTabletMeta =
                         new TabletMeta(dbId, tableId, partitionId, shadowIndexId, newSchemaHash, medium);
                 short replicationNum = olapTable.getPartitionInfo().getReplicationNum(partitionId);
-                for (Tablet originTablet : originIndex.getTablets()) {
+                for (LocalTablet originTablet : originIndex.getTablets()) {
                     long originTabletId = originTablet.getId();
                     long shadowTabletId = catalog.getNextId();
 
-                    Tablet shadowTablet = new Tablet(shadowTabletId);
+                    LocalTablet shadowTablet = new LocalTablet(shadowTabletId);
                     shadowIndex.addTablet(shadowTablet, shadowTabletMeta);
                     addedTablets.add(shadowTablet);
 
@@ -1231,7 +1231,7 @@ public class SchemaChangeHandler extends AlterHandler {
                          * So here we check the replica number strictly and do not allow to submit the job
                          * if the quorum of replica number is not satisfied.
                          */
-                        for (Tablet tablet : addedTablets) {
+                        for (LocalTablet tablet : addedTablets) {
                             Catalog.getCurrentInvertedIndex().deleteTablet(tablet.getId());
                         }
                         throw new DdlException(
@@ -1561,7 +1561,7 @@ public class SchemaChangeHandler extends AlterHandler {
             for (Partition partition : olapTable.getPartitions()) {
                 for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
                     int schemaHash = olapTable.getSchemaHashByIndexId(index.getId());
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         for (Replica replica : tablet.getReplicas()) {
                             ClearAlterTask alterTask = new ClearAlterTask(replica.getBackendId(), db.getId(),
                                     olapTable.getId(), partition.getId(), index.getId(), tablet.getId(), schemaHash);
@@ -1669,7 +1669,7 @@ public class SchemaChangeHandler extends AlterHandler {
 
             for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
                 int schemaHash = olapTable.getSchemaHashByIndexId(index.getId());
-                for (Tablet tablet : index.getTablets()) {
+                for (LocalTablet tablet : index.getTablets()) {
                     for (Replica replica : tablet.getReplicas()) {
                         Set<Pair<Long, Integer>> tabletIdWithHash =
                                 beIdToTabletIdWithHash.computeIfAbsent(replica.getBackendId(), k -> Sets.newHashSet());

@@ -46,7 +46,7 @@ import com.starrocks.catalog.OlapTable.OlapTableState;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.AnalysisException;
@@ -277,7 +277,7 @@ public class MaterializedViewHandler extends AlterHandler {
             TabletInvertedIndex tabletInvertedIndex = Catalog.getCurrentInvertedIndex();
             for (RollupJobV2 rollupJobV2 : rollupNameJobMap.values()) {
                 for (MaterializedIndex index : rollupJobV2.getPartitionIdToRollupIndex().values()) {
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         tabletInvertedIndex.deleteTablet(tablet.getId());
                     }
                 }
@@ -351,7 +351,7 @@ public class MaterializedViewHandler extends AlterHandler {
          * create all rollup indexes. and set state.
          * After setting, Tables' state will be ROLLUP
          */
-        List<Tablet> addedTablets = Lists.newArrayList();
+        List<LocalTablet> addedTablets = Lists.newArrayList();
         for (Partition partition : olapTable.getPartitions()) {
             long partitionId = partition.getId();
             TStorageMedium medium = olapTable.getPartitionInfo().getDataProperty(partitionId).getStorageMedium();
@@ -360,11 +360,11 @@ public class MaterializedViewHandler extends AlterHandler {
             MaterializedIndex baseIndex = partition.getIndex(baseIndexId);
             TabletMeta mvTabletMeta = new TabletMeta(dbId, tableId, partitionId, mvIndexId, mvSchemaHash, medium);
             short replicationNum = olapTable.getPartitionInfo().getReplicationNum(partitionId);
-            for (Tablet baseTablet : baseIndex.getTablets()) {
+            for (LocalTablet baseTablet : baseIndex.getTablets()) {
                 long baseTabletId = baseTablet.getId();
                 long mvTabletId = catalog.getNextId();
 
-                Tablet newTablet = new Tablet(mvTabletId);
+                LocalTablet newTablet = new LocalTablet(mvTabletId);
                 mvIndex.addTablet(newTablet, mvTabletMeta);
                 addedTablets.add(newTablet);
 
@@ -405,7 +405,7 @@ public class MaterializedViewHandler extends AlterHandler {
                      * So here we check the replica number strictly and do not allow to submit the job
                      * if the quorum of replica number is not satisfied.
                      */
-                    for (Tablet tablet : addedTablets) {
+                    for (LocalTablet tablet : addedTablets) {
                         Catalog.getCurrentInvertedIndex().deleteTablet(tablet.getId());
                     }
                     throw new DdlException("tablet " + baseTabletId + " has few healthy replica: " + healthyReplicaNum);
@@ -804,7 +804,7 @@ public class MaterializedViewHandler extends AlterHandler {
             // delete rollup index
             partition.deleteRollupIndex(mvIndexId);
             // remove tablets from inverted index
-            for (Tablet tablet : rollupIndex.getTablets()) {
+            for (LocalTablet tablet : rollupIndex.getTablets()) {
                 long tabletId = tablet.getId();
                 invertedIndex.deleteTablet(tabletId);
             }
@@ -827,7 +827,7 @@ public class MaterializedViewHandler extends AlterHandler {
 
                 if (!Catalog.isCheckpointThread()) {
                     // remove from inverted index
-                    for (Tablet tablet : rollupIndex.getTablets()) {
+                    for (LocalTablet tablet : rollupIndex.getTablets()) {
                         invertedIndex.deleteTablet(tablet.getId());
                     }
                 }

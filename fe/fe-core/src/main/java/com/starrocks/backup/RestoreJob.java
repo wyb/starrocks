@@ -55,7 +55,7 @@ import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Replica.ReplicaState;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Table.TableType;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.Config;
 import com.starrocks.common.MarkedCountDownLatch;
@@ -707,7 +707,7 @@ public class RestoreJob extends AbstractJob {
                 OlapTable tbl = (OlapTable) db.getTable(idChain.getTblId());
                 Partition part = tbl.getPartition(idChain.getPartId());
                 MaterializedIndex index = part.getIndex(idChain.getIdxId());
-                Tablet tablet = index.getTablet(idChain.getTabletId());
+                LocalTablet tablet = index.getTablet(idChain.getTabletId());
                 Replica replica = tablet.getReplicaById(idChain.getReplicaId());
                 long signature = catalog.getNextId();
                 SnapshotTask task = new SnapshotTask(null, replica.getBackendId(), signature,
@@ -774,7 +774,7 @@ public class RestoreJob extends AbstractJob {
             MaterializedIndexMeta indexMeta = localTbl.getIndexMetaByIndexId(restoredIdx.getId());
             TabletMeta tabletMeta = new TabletMeta(db.getId(), localTbl.getId(), restorePart.getId(),
                     restoredIdx.getId(), indexMeta.getSchemaHash(), TStorageMedium.HDD);
-            for (Tablet restoreTablet : restoredIdx.getTablets()) {
+            for (LocalTablet restoreTablet : restoredIdx.getTablets()) {
                 Catalog.getCurrentInvertedIndex().addTablet(restoreTablet.getId(), tabletMeta);
                 for (Replica restoreReplica : restoreTablet.getReplicas()) {
                     Catalog.getCurrentInvertedIndex().addReplica(restoreTablet.getId(), restoreReplica);
@@ -835,7 +835,7 @@ public class RestoreJob extends AbstractJob {
             for (int i = 0; i < remotetabletSize; i++) {
                 // generate new tablet id
                 long newTabletId = catalog.getNextId();
-                Tablet newTablet = new Tablet(newTabletId);
+                LocalTablet newTablet = new LocalTablet(newTabletId);
                 // add tablet to index, but not add to TabletInvertedIndex
                 remoteIdx.addTablet(newTablet, null /* tablet meta */, true /* is restore */);
 
@@ -868,7 +868,7 @@ public class RestoreJob extends AbstractJob {
             BackupIndexInfo backupIdxInfo = backupPartInfo.getIdx(localTbl.getIndexNameById(localIdx.getId()));
             Preconditions.checkState(backupIdxInfo.tablets.size() == localIdx.getTablets().size());
             for (int i = 0; i < localIdx.getTablets().size(); i++) {
-                Tablet localTablet = localIdx.getTablets().get(i);
+                LocalTablet localTablet = localIdx.getTablets().get(i);
                 BackupTabletInfo backupTabletInfo = backupIdxInfo.tablets.get(i);
                 LOG.debug("get tablet mapping: {} to {}, index {}", backupTabletInfo.id, localTablet.getId(), i);
                 for (Replica localReplica : localTablet.getReplicas()) {
@@ -932,7 +932,7 @@ public class RestoreJob extends AbstractJob {
                     int schemaHash = localTbl.getSchemaHashByIndexId(restoreIdx.getId());
                     TabletMeta tabletMeta = new TabletMeta(db.getId(), localTbl.getId(), restorePart.getId(),
                             restoreIdx.getId(), schemaHash, TStorageMedium.HDD);
-                    for (Tablet restoreTablet : restoreIdx.getTablets()) {
+                    for (LocalTablet restoreTablet : restoreIdx.getTablets()) {
                         Catalog.getCurrentInvertedIndex().addTablet(restoreTablet.getId(), tabletMeta);
                         for (Replica restoreReplica : restoreTablet.getReplicas()) {
                             Catalog.getCurrentInvertedIndex().addReplica(restoreTablet.getId(), restoreReplica);
@@ -950,7 +950,7 @@ public class RestoreJob extends AbstractJob {
                         int schemaHash = restoreTbl.getSchemaHashByIndexId(restoreIdx.getId());
                         TabletMeta tabletMeta = new TabletMeta(db.getId(), restoreTbl.getId(), restorePart.getId(),
                                 restoreIdx.getId(), schemaHash, TStorageMedium.HDD);
-                        for (Tablet restoreTablet : restoreIdx.getTablets()) {
+                        for (LocalTablet restoreTablet : restoreIdx.getTablets()) {
                             Catalog.getCurrentInvertedIndex().addTablet(restoreTablet.getId(), tabletMeta);
                             for (Replica restoreReplica : restoreTablet.getReplicas()) {
                                 Catalog.getCurrentInvertedIndex().addReplica(restoreTablet.getId(), restoreReplica);
@@ -1059,7 +1059,7 @@ public class RestoreJob extends AbstractJob {
                                 return;
                             }
 
-                            Tablet tablet = idx.getTablet(info.getTabletId());
+                            LocalTablet tablet = idx.getTablet(info.getTabletId());
                             if (tablet == null) {
                                 status = new Status(ErrCode.NOT_FOUND,
                                         "tablet " + info.getTabletId() + " does not exist in restored table "
@@ -1213,7 +1213,7 @@ public class RestoreJob extends AbstractJob {
 
                     // we also need to update the replica version of these overwritten restored partitions
                     for (MaterializedIndex idx : part.getMaterializedIndices(IndexExtState.VISIBLE)) {
-                        for (Tablet tablet : idx.getTablets()) {
+                        for (LocalTablet tablet : idx.getTablets()) {
                             for (Replica replica : tablet.getReplicas()) {
                                 if (!replica.checkVersionCatchUp(part.getVisibleVersion(), false)) {
                                     replica.updateRowCount(part.getVisibleVersion(),
@@ -1379,7 +1379,7 @@ public class RestoreJob extends AbstractJob {
                     LOG.info("remove restored table when cancelled: {}", restoreTbl.getName());
                     for (Partition part : restoreTbl.getPartitions()) {
                         for (MaterializedIndex idx : part.getMaterializedIndices(IndexExtState.VISIBLE)) {
-                            for (Tablet tablet : idx.getTablets()) {
+                            for (LocalTablet tablet : idx.getTablets()) {
                                 Catalog.getCurrentInvertedIndex().deleteTablet(tablet.getId());
                             }
                         }

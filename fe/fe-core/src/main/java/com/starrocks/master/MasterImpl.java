@@ -54,7 +54,7 @@ import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableProperty;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.cluster.ClusterNamespace;
@@ -531,7 +531,7 @@ public class MasterImpl {
             }
             index = rollupIndex;
         }
-        Tablet tablet = index.getTablet(tabletId);
+        LocalTablet tablet = index.getTablet(tabletId);
         if (tablet == null) {
             LOG.warn("could not find tablet {} in rollup index {} ", tabletId, indexId);
             return null;
@@ -757,7 +757,7 @@ public class MasterImpl {
         if (materializedIndex == null) {
             throw new MetaNotFoundException("Cannot find index[" + pushIndexId + "]");
         }
-        Tablet tablet = materializedIndex.getTablet(tabletId);
+        LocalTablet tablet = materializedIndex.getTablet(tabletId);
         if (tablet == null) {
             throw new MetaNotFoundException("Cannot find tablet[" + tabletId + "]");
         }
@@ -1117,7 +1117,7 @@ public class MasterImpl {
                     }
                     indexMeta.setSchema_meta(schemaMeta);
                     // fill in tablet info
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         TTabletMeta tTabletMeta = new TTabletMeta();
                         tTabletMeta.setTablet_id(tablet.getId());
                         tTabletMeta.setChecked_version(tablet.getCheckedVersion());

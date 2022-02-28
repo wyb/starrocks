@@ -31,7 +31,7 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Table.TableType;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.util.ListComparator;
 import com.starrocks.http.ActionController;
@@ -101,7 +101,7 @@ public class MigrationAction extends RestBaseAction {
                 for (Partition partition : olapTable.getPartitions()) {
                     String partitionName = partition.getName();
                     MaterializedIndex baseIndex = partition.getBaseIndex();
-                    for (Tablet tablet : baseIndex.getTablets()) {
+                    for (LocalTablet tablet : baseIndex.getTablets()) {
                         List<Comparable> row = Lists.newArrayList();
                         row.add(tableName);
                         row.add(partitionName);
@@ -127,7 +127,7 @@ public class MigrationAction extends RestBaseAction {
                     for (Partition partition : olapTable.getPartitions()) {
                         String partitionName = partition.getName();
                         MaterializedIndex baseIndex = partition.getBaseIndex();
-                        for (Tablet tablet : baseIndex.getTablets()) {
+                        for (LocalTablet tablet : baseIndex.getTablets()) {
                             List<Comparable> row = Lists.newArrayList();
                             row.add(tableName);
                             row.add(partitionName);

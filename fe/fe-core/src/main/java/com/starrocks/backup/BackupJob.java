@@ -41,7 +41,7 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Table.TableType;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.common.util.UUIDUtil;
@@ -398,8 +398,8 @@ public class BackupJob extends AbstractJob {
                     List<MaterializedIndex> indexes = partition.getMaterializedIndices(IndexExtState.VISIBLE);
                     for (MaterializedIndex index : indexes) {
                         int schemaHash = tbl.getSchemaHashByIndexId(index.getId());
-                        List<Tablet> tablets = index.getTablets();
-                        for (Tablet tablet : tablets) {
+                        List<LocalTablet> tablets = index.getTablets();
+                        for (LocalTablet tablet : tablets) {
                             Replica replica = chooseReplica(tablet, visibleVersion);
                             if (replica == null) {
                                 status = new Status(ErrCode.COMMON_ERROR,
@@ -668,7 +668,7 @@ public class BackupJob extends AbstractJob {
      * Choose a replica whose version >= visibleVersion and dose not have failed version.
      * Iterate replica order by replica id, the reason is to choose the same replica at each backup job.
      */
-    private Replica chooseReplica(Tablet tablet, long visibleVersion) {
+    private Replica chooseReplica(LocalTablet tablet, long visibleVersion) {
         List<Long> replicaIds = Lists.newArrayList();
         for (Replica replica : tablet.getReplicas()) {
             replicaIds.add(replica.getId());

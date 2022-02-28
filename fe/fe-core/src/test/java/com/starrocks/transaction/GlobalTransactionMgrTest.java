@@ -30,7 +30,7 @@ import com.starrocks.catalog.FakeCatalog;
 import com.starrocks.catalog.FakeEditLog;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Replica;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.DuplicatedRequestException;
@@ -184,7 +184,7 @@ public class GlobalTransactionMgrTest {
         assertEquals(CatalogTestUtil.testStartVersion, testPartition.getVisibleVersion());
         assertEquals(CatalogTestUtil.testStartVersion + 2, testPartition.getNextVersion());
         // check partition next version
-        Tablet tablet = testPartition.getIndex(CatalogTestUtil.testIndexId1).getTablet(CatalogTestUtil.testTabletId1);
+        LocalTablet tablet = testPartition.getIndex(CatalogTestUtil.testIndexId1).getTablet(CatalogTestUtil.testTabletId1);
         for (Replica replica : tablet.getReplicas()) {
             assertEquals(CatalogTestUtil.testStartVersion, replica.getVersion());
         }
@@ -248,7 +248,7 @@ public class GlobalTransactionMgrTest {
         assertEquals(CatalogTestUtil.testStartVersion, testPartition.getVisibleVersion());
         assertEquals(CatalogTestUtil.testStartVersion + 2, testPartition.getNextVersion());
         // check partition next version
-        Tablet tablet = testPartition.getIndex(CatalogTestUtil.testIndexId1).getTablet(CatalogTestUtil.testTabletId1);
+        LocalTablet tablet = testPartition.getIndex(CatalogTestUtil.testIndexId1).getTablet(CatalogTestUtil.testTabletId1);
         for (Replica replica : tablet.getReplicas()) {
             assertEquals(CatalogTestUtil.testStartVersion, replica.getVersion());
         }
@@ -481,7 +481,7 @@ public class GlobalTransactionMgrTest {
         assertEquals(CatalogTestUtil.testStartVersion + 1, testPartition.getVisibleVersion());
         assertEquals(CatalogTestUtil.testStartVersion + 2, testPartition.getNextVersion());
         // check partition next version
-        Tablet tablet = testPartition.getIndex(CatalogTestUtil.testIndexId1).getTablet(CatalogTestUtil.testTabletId1);
+        LocalTablet tablet = testPartition.getIndex(CatalogTestUtil.testIndexId1).getTablet(CatalogTestUtil.testTabletId1);
         for (Replica replica : tablet.getReplicas()) {
             if (replica.getId() == CatalogTestUtil.testReplicaId1) {
                 assertEquals(CatalogTestUtil.testStartVersion, replica.getVersion());
@@ -500,7 +500,7 @@ public class GlobalTransactionMgrTest {
         TransactionState transactionState = null;
         Partition testPartition = masterCatalog.getDb(CatalogTestUtil.testDbId1).getTable(CatalogTestUtil.testTableId1)
                 .getPartition(CatalogTestUtil.testPartition1);
-        Tablet tablet = testPartition.getIndex(CatalogTestUtil.testIndexId1).getTablet(CatalogTestUtil.testTabletId1);
+        LocalTablet tablet = testPartition.getIndex(CatalogTestUtil.testIndexId1).getTablet(CatalogTestUtil.testTabletId1);
         FakeCatalog.setCatalog(masterCatalog);
         long transactionId = masterTransMgr
                 .beginTransaction(CatalogTestUtil.testDbId1, Lists.newArrayList(CatalogTestUtil.testTableId1),

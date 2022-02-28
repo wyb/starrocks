@@ -9,7 +9,7 @@ import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Replica;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.sql.common.StarRocksPlannerException;
 import com.starrocks.system.Backend;
 import com.starrocks.thrift.TExplainLevel;
@@ -49,12 +49,12 @@ public class MetaScanNode extends ScanNode {
         for (Partition partition : partitions) {
             MaterializedIndex index = partition.getBaseIndex();
             int schemaHash = olapTable.getSchemaHashByIndexId(index.getId());
-            List<Tablet> tablets = index.getTablets();
+            List<LocalTablet> tablets = index.getTablets();
 
             long visibleVersion = partition.getVisibleVersion();
             String visibleVersionStr = String.valueOf(visibleVersion);
 
-            for (Tablet tablet : tablets) {
+            for (LocalTablet tablet : tablets) {
                 long tabletId = tablet.getId();
                 TScanRangeLocations scanRangeLocations = new TScanRangeLocations();
 

@@ -38,8 +38,8 @@ import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Replica.ReplicaState;
-import com.starrocks.catalog.Tablet;
-import com.starrocks.catalog.Tablet.TabletStatus;
+import com.starrocks.catalog.LocalTablet;
+import com.starrocks.catalog.LocalTablet.TabletStatus;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.clone.TabletSchedCtx;
@@ -440,7 +440,7 @@ public class ReportHandler extends Daemon {
                     }
                     int schemaHash = olapTable.getSchemaHashByIndexId(indexId);
 
-                    Tablet tablet = index.getTablet(tabletId);
+                    LocalTablet tablet = index.getTablet(tabletId);
                     if (tablet == null) {
                         continue;
                     }
@@ -579,7 +579,7 @@ public class ReportHandler extends Daemon {
                         continue;
                     }
 
-                    Tablet tablet = index.getTablet(tabletId);
+                    LocalTablet tablet = index.getTablet(tabletId);
                     if (tablet == null) {
                         continue;
                     }
@@ -840,7 +840,7 @@ public class ReportHandler extends Daemon {
 
                     int schemaHash = olapTable.getSchemaHashByIndexId(indexId);
 
-                    Tablet tablet = index.getTablet(tabletId);
+                    LocalTablet tablet = index.getTablet(tabletId);
                     if (tablet == null) {
                         continue;
                     }
@@ -1015,7 +1015,7 @@ public class ReportHandler extends Daemon {
                 throw new MetaNotFoundException("index[" + indexId + "] does not exist");
             }
 
-            Tablet tablet = materializedIndex.getTablet(tabletId);
+            LocalTablet tablet = materializedIndex.getTablet(tabletId);
             if (tablet == null) {
                 throw new MetaNotFoundException("tablet[" + tabletId + "] does not exist");
             }

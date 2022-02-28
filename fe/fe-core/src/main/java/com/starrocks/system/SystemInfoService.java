@@ -36,7 +36,7 @@ import com.starrocks.catalog.DiskInfo;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.cluster.Cluster;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
@@ -227,7 +227,7 @@ public class SystemInfoService {
                                 partition.getMaterializedIndices(MaterializedIndex.IndexExtState.VISIBLE)
                                         .forEach(rollupIdx -> {
                                             boolean existIntersection = rollupIdx.getTablets().stream()
-                                                    .map(Tablet::getId).anyMatch(tabletIds::contains);
+                                                    .map(LocalTablet::getId).anyMatch(tabletIds::contains);
 
                                             if (existIntersection) {
                                                 throw new RuntimeException(errMsg);

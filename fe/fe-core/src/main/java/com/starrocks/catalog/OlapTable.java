@@ -36,7 +36,7 @@ import com.starrocks.catalog.MaterializedIndex.IndexExtState;
 import com.starrocks.catalog.MaterializedIndex.IndexState;
 import com.starrocks.catalog.Partition.PartitionState;
 import com.starrocks.catalog.Replica.ReplicaState;
-import com.starrocks.catalog.Tablet.TabletStatus;
+import com.starrocks.catalog.LocalTablet.TabletStatus;
 import com.starrocks.clone.TabletSchedCtx;
 import com.starrocks.clone.TabletScheduler;
 import com.starrocks.common.DdlException;
@@ -488,7 +488,7 @@ public class OlapTable extends Table {
                 idx.clearTabletsForRestore();
                 for (int i = 0; i < tabletNum; i++) {
                     long newTabletId = catalog.getNextId();
-                    Tablet newTablet = new Tablet(newTabletId);
+                    LocalTablet newTablet = new LocalTablet(newTabletId);
                     idx.addTablet(newTablet, null /* tablet meta */, true /* is restore */);
 
                     // replicas
@@ -1226,7 +1226,7 @@ public class OlapTable extends Table {
                 copied.getPartitionInfo().setDataProperty(partition.getId(), new DataProperty(TStorageMedium.HDD));
                 for (MaterializedIndex idx : partition.getMaterializedIndices(extState)) {
                     idx.setState(IndexState.NORMAL);
-                    for (Tablet tablet : idx.getTablets()) {
+                    for (LocalTablet tablet : idx.getTablets()) {
                         for (Replica replica : tablet.getReplicas()) {
                             replica.setState(ReplicaState.NORMAL);
                         }
@@ -1323,7 +1323,7 @@ public class OlapTable extends Table {
             long visibleVersion = partition.getVisibleVersion();
             short replicationNum = partitionInfo.getReplicationNum(partition.getId());
             for (MaterializedIndex mIndex : partition.getMaterializedIndices(IndexExtState.ALL)) {
-                for (Tablet tablet : mIndex.getTablets()) {
+                for (LocalTablet tablet : mIndex.getTablets()) {
                     if (tabletScheduler.containsTablet(tablet.getId())) {
                         return false;
                     }
@@ -1349,7 +1349,7 @@ public class OlapTable extends Table {
             short replicationNum = partitionInfo.getReplicationNum(partition.getId());
             MaterializedIndex baseIdx = partition.getBaseIndex();
             for (Long tabletId : baseIdx.getTabletIdsInOrder()) {
-                Tablet tablet = baseIdx.getTablet(tabletId);
+                LocalTablet tablet = baseIdx.getTablet(tabletId);
                 List<Long> replicaBackendIds = tablet.getNormalReplicaBackendIds();
                 if (replicaBackendIds.size() < replicationNum) {
                     // this should not happen, but in case, throw an exception to terminate this process
@@ -1373,7 +1373,7 @@ public class OlapTable extends Table {
         for (Partition partition : getPartitions()) {
             long version = partition.getVisibleVersion();
             for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
-                for (Tablet tablet : index.getTablets()) {
+                for (LocalTablet tablet : index.getTablets()) {
                     long tabletRowCount = 0L;
                     for (Replica replica : tablet.getReplicas()) {
                         if (replica.checkVersionCatchUp(version, false)

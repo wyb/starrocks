@@ -52,7 +52,7 @@ import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.PartitionType;
 import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Replica;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.ErrorCode;
@@ -390,7 +390,7 @@ public class OlapScanNode extends ScanNode {
 
     public void addScanRangeLocations(Partition partition,
                                       MaterializedIndex index,
-                                      List<Tablet> tablets,
+                                      List<LocalTablet> tablets,
                                       long localBeId) throws UserException {
         int logNum = 0;
         int schemaHash = olapTable.getSchemaHashByIndexId(index.getId());
@@ -398,7 +398,7 @@ public class OlapScanNode extends ScanNode {
         long visibleVersion = partition.getVisibleVersion();
         String visibleVersionStr = String.valueOf(visibleVersion);
 
-        for (Tablet tablet : tablets) {
+        for (LocalTablet tablet : tablets) {
             long tabletId = tablet.getId();
             LOG.debug("{} tabletId={}", (logNum++), tabletId);
             TScanRangeLocations scanRangeLocations = new TScanRangeLocations();
@@ -540,7 +540,7 @@ public class OlapScanNode extends ScanNode {
         for (Long partitionId : selectedPartitionIds) {
             final Partition partition = olapTable.getPartition(partitionId);
             final MaterializedIndex selectedTable = partition.getIndex(selectedIndexId);
-            final List<Tablet> tablets = Lists.newArrayList();
+            final List<LocalTablet> tablets = Lists.newArrayList();
             final Collection<Long> tabletIds = distributionPrune(selectedTable, partition.getDistributionInfo());
             LOG.debug("distribution prune tablets: {}", tabletIds);
 

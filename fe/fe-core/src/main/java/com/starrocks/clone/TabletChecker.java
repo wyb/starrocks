@@ -37,8 +37,8 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Partition.PartitionState;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Table.TableType;
-import com.starrocks.catalog.Tablet;
-import com.starrocks.catalog.Tablet.TabletStatus;
+import com.starrocks.catalog.LocalTablet;
+import com.starrocks.catalog.LocalTablet.TabletStatus;
 import com.starrocks.clone.TabletScheduler.AddResult;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
@@ -234,7 +234,7 @@ public class TabletChecker extends MasterDaemon {
                          * Tablet in SHADOW index can not be repaired of balanced
                          */
                         for (MaterializedIndex idx : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
-                            for (Tablet tablet : idx.getTablets()) {
+                            for (LocalTablet tablet : idx.getTablets()) {
                                 totalTabletNum++;
 
                                 if (tabletScheduler.containsTablet(tablet.getId())) {

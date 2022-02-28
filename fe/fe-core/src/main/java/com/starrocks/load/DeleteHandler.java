@@ -49,7 +49,7 @@ import com.starrocks.catalog.PartitionType;
 import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
@@ -224,7 +224,7 @@ public class DeleteHandler implements Writable {
                 int totalReplicaNum = 0;
                 for (Partition partition : partitions) {
                     for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
-                        for (Tablet tablet : index.getTablets()) {
+                        for (LocalTablet tablet : index.getTablets()) {
                             totalReplicaNum += tablet.getReplicas().size();
                         }
                     }
@@ -237,7 +237,7 @@ public class DeleteHandler implements Writable {
                         long indexId = index.getId();
                         int schemaHash = olapTable.getSchemaHashByIndexId(indexId);
 
-                        for (Tablet tablet : index.getTablets()) {
+                        for (LocalTablet tablet : index.getTablets()) {
                             long tabletId = tablet.getId();
 
                             // set push type

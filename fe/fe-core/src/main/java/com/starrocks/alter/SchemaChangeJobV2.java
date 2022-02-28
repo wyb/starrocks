@@ -42,7 +42,7 @@ import com.starrocks.catalog.OlapTable.OlapTableState;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Replica.ReplicaState;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.AnalysisException;
@@ -221,7 +221,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
         // count total replica num
         int totalReplicaNum = 0;
         for (MaterializedIndex shadowIdx : partitionIndexMap.values()) {
-            for (Tablet tablet : shadowIdx.getTablets()) {
+            for (LocalTablet tablet : shadowIdx.getTablets()) {
                 totalReplicaNum += tablet.getReplicas().size();
             }
         }
@@ -266,7 +266,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                         }
                     }
 
-                    for (Tablet shadowTablet : shadowIdx.getTablets()) {
+                    for (LocalTablet shadowTablet : shadowIdx.getTablets()) {
                         long shadowTabletId = shadowTablet.getId();
                         List<Replica> shadowReplicas = shadowTablet.getReplicas();
                         for (Replica shadowReplica : shadowReplicas) {
@@ -426,7 +426,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                     int shadowSchemaHash = indexSchemaVersionAndHashMap.get(shadowIdxId).schemaHash;
                     int originSchemaHash = tbl.getSchemaHashByIndexId(indexIdMap.get(shadowIdxId));
 
-                    for (Tablet shadowTablet : shadowIdx.getTablets()) {
+                    for (LocalTablet shadowTablet : shadowIdx.getTablets()) {
                         long shadowTabletId = shadowTablet.getId();
                         long originTabletId = partitionIndexTabletMap.get(partitionId, shadowIdxId).get(shadowTabletId);
                         for (Replica shadowReplica : shadowTablet.getReplicas()) {
@@ -518,7 +518,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                 for (Map.Entry<Long, MaterializedIndex> entry : shadowIndexMap.entrySet()) {
                     MaterializedIndex shadowIdx = entry.getValue();
 
-                    for (Tablet shadowTablet : shadowIdx.getTablets()) {
+                    for (LocalTablet shadowTablet : shadowIdx.getTablets()) {
                         List<Replica> replicas = shadowTablet.getReplicas();
                         int healthyReplicaNum = 0;
                         for (Replica replica : replicas) {
@@ -574,7 +574,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                 Preconditions.checkNotNull(droppedIdx, originIdxId + " vs. " + shadowIdxId);
 
                 // set the replica state from ReplicaState.ALTER to ReplicaState.NORMAL since the schema change is done.
-                for (Tablet tablet : shadowIdx.getTablets()) {
+                for (LocalTablet tablet : shadowIdx.getTablets()) {
                     for (Replica replica : tablet.getReplicas()) {
                         replica.setState(ReplicaState.NORMAL);
                     }
@@ -583,7 +583,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                 partition.visualiseShadowIndex(shadowIdxId, originIdxId == partition.getBaseIndex().getId());
 
                 // the origin tablet created by old schema can be deleted from FE meta data
-                for (Tablet originTablet : droppedIdx.getTablets()) {
+                for (LocalTablet originTablet : droppedIdx.getTablets()) {
                     Catalog.getCurrentInvertedIndex().deleteTablet(originTablet.getId());
                 }
             }
@@ -664,7 +664,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                         Map<Long, MaterializedIndex> shadowIndexMap = partitionIndexMap.row(partitionId);
                         for (Map.Entry<Long, MaterializedIndex> entry : shadowIndexMap.entrySet()) {
                             MaterializedIndex shadowIdx = entry.getValue();
-                            for (Tablet shadowTablet : shadowIdx.getTablets()) {
+                            for (LocalTablet shadowTablet : shadowIdx.getTablets()) {
                                 invertedIndex.deleteTablet(shadowTablet.getId());
                             }
                             partition.deleteRollupIndex(shadowIdx.getId());
@@ -719,7 +719,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                 TabletMeta shadowTabletMeta = new TabletMeta(dbId, tableId, partitionId, shadowIndexId,
                         indexSchemaVersionAndHashMap.get(shadowIndexId).schemaHash, medium);
 
-                for (Tablet shadownTablet : shadowIndex.getTablets()) {
+                for (LocalTablet shadownTablet : shadowIndex.getTablets()) {
                     invertedIndex.addTablet(shadownTablet.getId(), shadowTabletMeta);
                     for (Replica shadowReplica : shadownTablet.getReplicas()) {
                         invertedIndex.addReplica(shadownTablet.getId(), shadowReplica);

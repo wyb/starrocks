@@ -87,7 +87,7 @@ public class MetadataViewer {
 
                 for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
                     int schemaHash = olapTable.getSchemaHashByIndexId(index.getId());
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         long tabletId = tablet.getId();
                         int count = replicationNum;
                         for (Replica replica : tablet.getReplicas()) {
@@ -223,7 +223,7 @@ public class MetadataViewer {
             for (long partId : partitionIds) {
                 Partition partition = olapTable.getPartition(partId);
                 for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         for (Replica replica : tablet.getReplicas()) {
                             if (!countMap.containsKey(replica.getBackendId())) {
                                 continue;

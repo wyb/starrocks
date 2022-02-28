@@ -39,7 +39,7 @@ import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.ResourceMgr;
 import com.starrocks.catalog.SparkResource;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DataQualityException;
@@ -332,7 +332,7 @@ public class SparkLoadJobTest {
             @Mocked Catalog catalog, @Injectable String originStmt,
             @Mocked SparkEtlJobHandler handler, @Mocked AgentTaskExecutor executor,
             @Injectable Database db, @Injectable OlapTable table, @Injectable Partition partition,
-            @Injectable MaterializedIndex index, @Injectable Tablet tablet, @Injectable Replica replica,
+            @Injectable MaterializedIndex index, @Injectable LocalTablet tablet, @Injectable Replica replica,
             @Injectable GlobalTransactionMgr transactionMgr) throws Exception {
         EtlStatus status = new EtlStatus();
         status.setState(TEtlState.FINISHED);

@@ -12,7 +12,7 @@ import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.Config;
 import com.starrocks.common.FeConstants;
@@ -3528,7 +3528,7 @@ public class PlanFragmentTest extends PlanTestBase {
             partition.updateVisibleVersion(2);
             for (MaterializedIndex mIndex : partition.getMaterializedIndices(MaterializedIndex.IndexExtState.VISIBLE)) {
                 mIndex.setRowCount(10000);
-                for (Tablet tablet : mIndex.getTablets()) {
+                for (LocalTablet tablet : mIndex.getTablets()) {
                     for (Replica replica : tablet.getReplicas()) {
                         replica.updateRowCount(2, 200000, 10000);
                     }

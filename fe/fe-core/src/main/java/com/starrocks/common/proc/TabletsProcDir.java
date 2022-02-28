@@ -28,7 +28,7 @@ import com.starrocks.catalog.Catalog;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.Replica;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.FeConstants;
@@ -81,7 +81,7 @@ public class TabletsProcDir implements ProcDirInterface {
         db.readLock();
         try {
             // get infos
-            for (Tablet tablet : index.getTablets()) {
+            for (LocalTablet tablet : index.getTablets()) {
                 long tabletId = tablet.getId();
                 if (tablet.getReplicas().size() == 0) {
                     List<Comparable> tabletInfo = new ArrayList<Comparable>();

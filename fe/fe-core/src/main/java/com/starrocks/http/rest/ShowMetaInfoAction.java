@@ -32,7 +32,7 @@ import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Replica.ReplicaState;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Table.TableType;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.Config;
 import com.starrocks.ha.HAProtocol;
 import com.starrocks.http.ActionController;
@@ -178,7 +178,7 @@ public class ShowMetaInfoAction extends RestBaseAction {
                     long partitionSize = 0;
                     for (MaterializedIndex mIndex : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
                         long indexSize = 0;
-                        for (Tablet tablet : mIndex.getTablets()) {
+                        for (LocalTablet tablet : mIndex.getTablets()) {
                             long maxReplicaSize = 0;
                             for (Replica replica : tablet.getReplicas()) {
                                 if (replica.getState() == ReplicaState.NORMAL

@@ -132,9 +132,9 @@ public class CatalogTestUtil {
                 if (slaveIndex == null) {
                     return false;
                 }
-                List<Tablet> allTablets = masterIndex.getTablets();
-                for (Tablet masterTablet : allTablets) {
-                    Tablet slaveTablet = slaveIndex.getTablet(masterTablet.getId());
+                List<LocalTablet> allTablets = masterIndex.getTablets();
+                for (LocalTablet masterTablet : allTablets) {
+                    LocalTablet slaveTablet = slaveIndex.getTablet(masterTablet.getId());
                     if (slaveTablet == null) {
                         return false;
                     }
@@ -168,7 +168,7 @@ public class CatalogTestUtil {
                 ReplicaState.NORMAL, -1, 0);
 
         // tablet
-        Tablet tablet = new Tablet(tabletId);
+        LocalTablet tablet = new LocalTablet(tabletId);
 
         // index
         MaterializedIndex index = new MaterializedIndex(indexId, IndexState.NORMAL);

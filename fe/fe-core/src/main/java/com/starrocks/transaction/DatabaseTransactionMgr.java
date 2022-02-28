@@ -35,7 +35,7 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.AnalysisException;
@@ -481,7 +481,7 @@ public class DatabaseTransactionMgr {
                 List<MaterializedIndex> allIndices = transactionState.getPartitionLoadedTblIndexes(tableId, partition);
                 int quorumReplicaNum = table.getPartitionInfo().getQuorumNum(partition.getId());
                 for (MaterializedIndex index : allIndices) {
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         int successReplicaNum = 0;
                         long tabletId = tablet.getId();
                         Set<Long> tabletBackends = tablet.getBackendIds();
@@ -664,7 +664,7 @@ public class DatabaseTransactionMgr {
                     List<MaterializedIndex> allIndices = txn.getPartitionLoadedTblIndexes(tableId, partition);
                     int quorumNum = partitionInfo.getQuorumNum(partitionId);
                     for (MaterializedIndex index : allIndices) {
-                        for (Tablet tablet : index.getTablets()) {
+                        for (LocalTablet tablet : index.getTablets()) {
                             int healthReplicaNum = 0;
                             // if most replica's version have been updated to version published
                             // which means publish version task finished in replica  
@@ -768,7 +768,7 @@ public class DatabaseTransactionMgr {
                     List<MaterializedIndex> allIndices =
                             transactionState.getPartitionLoadedTblIndexes(tableId, partition);
                     for (MaterializedIndex index : allIndices) {
-                        for (Tablet tablet : index.getTablets()) {
+                        for (LocalTablet tablet : index.getTablets()) {
                             int healthReplicaNum = 0;
                             for (Replica replica : tablet.getReplicas()) {
                                 if (!errorReplicaIds.contains(replica.getId())
@@ -1280,8 +1280,8 @@ public class DatabaseTransactionMgr {
                 List<MaterializedIndex> allIndices =
                         partition.getMaterializedIndices(MaterializedIndex.IndexExtState.ALL);
                 for (MaterializedIndex index : allIndices) {
-                    List<Tablet> tablets = index.getTablets();
-                    for (Tablet tablet : tablets) {
+                    List<LocalTablet> tablets = index.getTablets();
+                    for (LocalTablet tablet : tablets) {
                         for (Replica replica : tablet.getReplicas()) {
                             if (errorReplicaIds.contains(replica.getId())) {
                                 // should get from transaction state
@@ -1309,7 +1309,7 @@ public class DatabaseTransactionMgr {
                 List<MaterializedIndex> allIndices =
                         partition.getMaterializedIndices(MaterializedIndex.IndexExtState.ALL);
                 for (MaterializedIndex index : allIndices) {
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         for (Replica replica : tablet.getReplicas()) {
                             long lastFailedVersion = replica.getLastFailedVersion();
                             long newVersion = newCommitVersion;

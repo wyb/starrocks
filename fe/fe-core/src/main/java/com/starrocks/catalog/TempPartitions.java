@@ -73,7 +73,7 @@ public class TempPartitions implements Writable, GsonPostProcessable {
             if (!Catalog.isCheckpointThread() && needDropTablet) {
                 TabletInvertedIndex invertedIndex = Catalog.getCurrentInvertedIndex();
                 for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.ALL)) {
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         invertedIndex.deleteTablet(tablet.getId());
                     }
                 }

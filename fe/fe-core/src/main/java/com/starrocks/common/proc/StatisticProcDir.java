@@ -33,8 +33,8 @@ import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Table.TableType;
-import com.starrocks.catalog.Tablet;
-import com.starrocks.catalog.Tablet.TabletStatus;
+import com.starrocks.catalog.LocalTablet;
+import com.starrocks.catalog.LocalTablet.TabletStatus;
 import com.starrocks.clone.TabletSchedCtx.Priority;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Pair;
@@ -133,7 +133,7 @@ public class StatisticProcDir implements ProcDirInterface {
                         for (MaterializedIndex materializedIndex : partition
                                 .getMaterializedIndices(IndexExtState.VISIBLE)) {
                             ++dbIndexNum;
-                            for (Tablet tablet : materializedIndex.getTablets()) {
+                            for (LocalTablet tablet : materializedIndex.getTablets()) {
                                 ++dbTabletNum;
                                 dbReplicaNum += tablet.getReplicas().size();
 

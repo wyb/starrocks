@@ -44,7 +44,7 @@ import com.starrocks.catalog.Partition.PartitionState;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Replica.ReplicaState;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.Config;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.FeMetaVersion;
@@ -338,7 +338,7 @@ public class SchemaChangeJob extends AlterJob {
             for (Partition partition : olapTable.getPartitions()) {
                 long partitionId = partition.getId();
                 for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.ALL)) {
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         List<Replica> replicas = tablet.getReplicas();
                         for (Replica replica : replicas) {
                             long backendId = replica.getBackendId();
@@ -427,7 +427,7 @@ public class SchemaChangeJob extends AlterJob {
 
                         TStorageType storageType = newStorageType == null ? olapTable.getStorageTypeByIndexId(indexId)
                                 : newStorageType;
-                        for (Tablet tablet : alterIndex.getTablets()) {
+                        for (LocalTablet tablet : alterIndex.getTablets()) {
                             long tabletId = tablet.getId();
                             short replicaSendNum = 0;
                             for (Replica replica : tablet.getReplicas()) {
@@ -515,7 +515,7 @@ public class SchemaChangeJob extends AlterJob {
                     if (index == null || index.getState() == IndexState.NORMAL) {
                         continue;
                     }
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         long tabletId = tablet.getId();
                         for (Replica replica : tablet.getReplicas()) {
                             if (replica.getState() == ReplicaState.CLONE
@@ -608,7 +608,7 @@ public class SchemaChangeJob extends AlterJob {
             Preconditions.checkState(materializedIndex.getState() == IndexState.SCHEMA_CHANGE);
 
             Preconditions.checkArgument(finishTabletInfo.getTablet_id() == tabletId);
-            Tablet tablet = materializedIndex.getTablet(tabletId);
+            LocalTablet tablet = materializedIndex.getTablet(tabletId);
             if (tablet == null) {
                 throw new MetaNotFoundException("Cannot find tablet[" + tabletId + "]");
             }
@@ -689,7 +689,7 @@ public class SchemaChangeJob extends AlterJob {
                             return -1;
                         }
 
-                        for (Tablet tablet : materializedIndex.getTablets()) {
+                        for (LocalTablet tablet : materializedIndex.getTablets()) {
                             List<Replica> replicas = tablet.getReplicas();
                             List<Replica> errorReplicas = Lists.newArrayList();
                             int healthNum = replicas.size();
@@ -761,7 +761,7 @@ public class SchemaChangeJob extends AlterJob {
                         // task may be left if some backends are down during schema change
                         if (!this.partitionIdToFinishedIndexIds.containsKey(partitionId)
                                 || !this.partitionIdToFinishedIndexIds.get(partitionId).contains(indexId)) {
-                            for (Tablet tablet : materializedIndex.getTablets()) {
+                            for (LocalTablet tablet : materializedIndex.getTablets()) {
                                 for (Replica replica : tablet.getReplicas()) {
                                     AgentTaskQueue.removeTask(replica.getBackendId(), TTaskType.SCHEMA_CHANGE,
                                             tablet.getId());
@@ -798,7 +798,7 @@ public class SchemaChangeJob extends AlterJob {
                         MaterializedIndex materializedIndex = partition.getIndex(indexId);
                         int schemaHash = changedIndexIdToSchemaHash.get(indexId);
                         Preconditions.checkState(materializedIndex.getState() == IndexState.SCHEMA_CHANGE);
-                        for (Tablet tablet : materializedIndex.getTablets()) {
+                        for (LocalTablet tablet : materializedIndex.getTablets()) {
                             long tabletId = tablet.getId();
                             for (Replica replica : tablet.getReplicas()) {
                                 if (replica.getState() != ReplicaState.SCHEMA_CHANGE) {
@@ -918,7 +918,7 @@ public class SchemaChangeJob extends AlterJob {
                 for (Map.Entry<Long, Integer> entry : changedIndexIdToSchemaHash.entrySet()) {
                     MaterializedIndex index = partition.getIndex(entry.getKey());
                     // set state to SCHEMA_CHANGE
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         for (Replica replica : tablet.getReplicas()) {
                             if (replica.getState() == ReplicaState.CLONE
                                     || replica.getState() == ReplicaState.DECOMMISSION) {
@@ -961,7 +961,7 @@ public class SchemaChangeJob extends AlterJob {
                 long partitionId = partition.getId();
                 for (Map.Entry<Long, Integer> entry : changedIndexIdToSchemaHash.entrySet()) {
                     MaterializedIndex index = partition.getIndex(entry.getKey());
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         for (Replica replica : tablet.getReplicas()) {
                             replica.setState(ReplicaState.NORMAL);
                         }
@@ -985,7 +985,7 @@ public class SchemaChangeJob extends AlterJob {
                         if (schemaHash == -1) {
                             schemaHash = getSchemaHashByIndexId(info.getIndexId());
                         }
-                        Tablet tablet = mIndex.getTablet(info.getTabletId());
+                        LocalTablet tablet = mIndex.getTablet(info.getTabletId());
                         if (info.getOpType() == ReplicaOperationType.SCHEMA_CHANGE) {
                             Replica replica = tablet.getReplicaByBackendId(info.getBackendId());
                             replica.updateVersionInfo(info.getVersion(),
@@ -1061,7 +1061,7 @@ public class SchemaChangeJob extends AlterJob {
                     if (index == null) {
                         continue;
                     }
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         for (Replica replica : tablet.getReplicas()) {
                             if (replica.getState() == ReplicaState.CLONE
                                     || replica.getState() == ReplicaState.DECOMMISSION

@@ -35,7 +35,7 @@ import com.starrocks.catalog.MaterializedIndex.IndexExtState;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.MarkedCountDownLatch;
@@ -238,7 +238,7 @@ public class RestoreJobTest {
                 idxInfo.schemaHash = expectedRestoreTbl.getSchemaHashByIndexId(index.getId());
                 partInfo.indexes.put(idxInfo.name, idxInfo);
 
-                for (Tablet tablet : index.getTablets()) {
+                for (LocalTablet tablet : index.getTablets()) {
                     BackupTabletInfo tabletInfo = new BackupTabletInfo();
                     tabletInfo.id = tablet.getId();
                     tabletInfo.files.add(tabletInfo.id + ".dat");

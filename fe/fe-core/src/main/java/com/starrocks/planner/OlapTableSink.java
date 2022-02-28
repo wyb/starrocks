@@ -42,7 +42,7 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.PartitionType;
 import com.starrocks.catalog.RangePartitionInfo;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.ErrorCode;
@@ -249,7 +249,7 @@ public class OlapTableSink extends DataSink {
 
                     for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.ALL)) {
                         tPartition.addToIndexes(new TOlapTableIndexTablets(index.getId(), Lists.newArrayList(
-                                index.getTablets().stream().map(Tablet::getId).collect(Collectors.toList()))));
+                                index.getTablets().stream().map(LocalTablet::getId).collect(Collectors.toList()))));
                         tPartition.setNum_buckets(index.getTablets().size());
                     }
                     partitionParam.addToPartitions(tPartition);
@@ -279,7 +279,7 @@ public class OlapTableSink extends DataSink {
                 // No lowerBound and upperBound for this range
                 for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.ALL)) {
                     tPartition.addToIndexes(new TOlapTableIndexTablets(index.getId(), Lists.newArrayList(
-                            index.getTablets().stream().map(Tablet::getId).collect(Collectors.toList()))));
+                            index.getTablets().stream().map(LocalTablet::getId).collect(Collectors.toList()))));
                     tPartition.setNum_buckets(index.getTablets().size());
                 }
                 partitionParam.addToPartitions(tPartition);
@@ -304,7 +304,7 @@ public class OlapTableSink extends DataSink {
             for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.ALL)) {
                 // we should ensure the replica backend is alive
                 // otherwise, there will be a 'unknown node id, id=xxx' error for stream load
-                for (Tablet tablet : index.getTablets()) {
+                for (LocalTablet tablet : index.getTablets()) {
                     Multimap<Long, Long> bePathsMap = tablet.getNormalReplicaBackendPathMap(table.getClusterId());
                     if (bePathsMap.keySet().size() < quorum) {
                         throw new UserException(InternalErrorCode.REPLICA_FEW_ERR,

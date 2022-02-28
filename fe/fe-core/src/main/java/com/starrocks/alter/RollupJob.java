@@ -40,7 +40,7 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Partition.PartitionState;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Replica.ReplicaState;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.common.Config;
@@ -225,7 +225,7 @@ public class RollupJob extends AlterJob {
             throw new MetaNotFoundException("Cannot find rollup index[" + indexId + "]");
         }
 
-        Tablet tablet = rollupIndex.getTablet(tabletId);
+        LocalTablet tablet = rollupIndex.getTablet(tabletId);
         if (tablet == null) {
             throw new MetaNotFoundException("Cannot find tablet[" + tabletId + "]");
         }
@@ -338,7 +338,7 @@ public class RollupJob extends AlterJob {
                     // has to use rollup base index, could not use partition.getBaseIndex()
                     // because the rollup index could be created based on another rollup index
                     MaterializedIndex baseIndex = partition.getIndex(this.getBaseIndexId());
-                    for (Tablet baseTablet : baseIndex.getTablets()) {
+                    for (LocalTablet baseTablet : baseIndex.getTablets()) {
                         long baseTabletId = baseTablet.getId();
                         List<Replica> baseReplicas = baseTablet.getReplicas();
                         for (Replica baseReplica : baseReplicas) {
@@ -413,7 +413,7 @@ public class RollupJob extends AlterJob {
                     MaterializedIndex rollupIndex = entry.getValue();
 
                     Map<Long, Long> tabletIdMap = this.partitionIdToBaseRollupTabletIdMap.get(partitionId);
-                    for (Tablet rollupTablet : rollupIndex.getTablets()) {
+                    for (LocalTablet rollupTablet : rollupIndex.getTablets()) {
                         long rollupTabletId = rollupTablet.getId();
                         List<Replica> rollupReplicas = rollupTablet.getReplicas();
                         for (Replica rollupReplica : rollupReplicas) {
@@ -452,7 +452,7 @@ public class RollupJob extends AlterJob {
     public synchronized void cancel(OlapTable olapTable, String msg) {
         // remove tasks
         for (MaterializedIndex rollupIndex : this.partitionIdToRollupIndex.values()) {
-            for (Tablet rollupTablet : rollupIndex.getTablets()) {
+            for (LocalTablet rollupTablet : rollupIndex.getTablets()) {
                 long rollupTabletId = rollupTablet.getId();
                 List<Replica> rollupReplicas = rollupTablet.getReplicas();
                 for (Replica rollupReplica : rollupReplicas) {
@@ -513,7 +513,7 @@ public class RollupJob extends AlterJob {
             }
         }
         Preconditions.checkState(rollupTabletId != -1L);
-        Tablet rollupTablet = rollupIndex.getTablet(rollupTabletId);
+        LocalTablet rollupTablet = rollupIndex.getTablet(rollupTabletId);
         Preconditions.checkNotNull(rollupIndex);
 
         // 3. find rollup replica
@@ -549,7 +549,7 @@ public class RollupJob extends AlterJob {
         Preconditions.checkState(rollupIndex.getState() == IndexState.ROLLUP);
 
         Preconditions.checkArgument(finishTabletInfo.getTablet_id() == rollupTabletId);
-        Tablet rollupTablet = rollupIndex.getTablet(rollupTabletId);
+        LocalTablet rollupTablet = rollupIndex.getTablet(rollupTabletId);
         if (rollupTablet == null) {
             throw new MetaNotFoundException("Cannot find rollup tablet[" + rollupTabletId + "]");
         }
@@ -623,7 +623,7 @@ public class RollupJob extends AlterJob {
 
                     short expectReplicationNum = olapTable.getPartitionInfo().getReplicationNum(partition.getId());
                     MaterializedIndex rollupIndex = entry.getValue();
-                    for (Tablet rollupTablet : rollupIndex.getTablets()) {
+                    for (LocalTablet rollupTablet : rollupIndex.getTablets()) {
                         // yiguolei: the rollup tablet only contains the replica that is healthy at rollup time
                         List<Replica> replicas = rollupTablet.getReplicas();
                         List<Replica> errorReplicas = Lists.newArrayList();
@@ -675,7 +675,7 @@ public class RollupJob extends AlterJob {
 
                         // remove task for safety
                         // task may be left if some backends are down during schema change
-                        for (Tablet tablet : rollupIndex.getTablets()) {
+                        for (LocalTablet tablet : rollupIndex.getTablets()) {
                             for (Replica replica : tablet.getReplicas()) {
                                 AgentTaskQueue.removeTask(replica.getBackendId(), TTaskType.ROLLUP,
                                         tablet.getId());
@@ -695,7 +695,7 @@ public class RollupJob extends AlterJob {
                     Preconditions.checkNotNull(rollupIndex);
 
                     // 1. record replica info
-                    for (Tablet tablet : rollupIndex.getTablets()) {
+                    for (LocalTablet tablet : rollupIndex.getTablets()) {
                         long tabletId = tablet.getId();
                         for (Replica replica : tablet.getReplicas()) {
                             ReplicaPersistInfo replicaInfo =
@@ -769,7 +769,7 @@ public class RollupJob extends AlterJob {
                     MaterializedIndex rollupIndex = entry.getValue();
                     TabletMeta tabletMeta = new TabletMeta(dbId, tableId, entry.getKey(), rollupIndexId,
                             rollupSchemaHash, medium);
-                    for (Tablet tablet : rollupIndex.getTablets()) {
+                    for (LocalTablet tablet : rollupIndex.getTablets()) {
                         long tabletId = tablet.getId();
                         invertedIndex.addTablet(tabletId, tabletMeta);
                         for (Replica replica : tablet.getReplicas()) {
@@ -803,7 +803,7 @@ public class RollupJob extends AlterJob {
                     // Because the rollupIndex here is read from edit log, so the replicas in it are
                     // not the same objects as in inverted index.
                     // And checkpoint thread is no need to handle inverted index
-                    for (Tablet tablet : rollupIndex.getTablets()) {
+                    for (LocalTablet tablet : rollupIndex.getTablets()) {
                         List<Replica> copiedReplicas = Lists.newArrayList(tablet.getReplicas());
                         tablet.clearReplica();
                         for (Replica copiedReplica : copiedReplicas) {
@@ -814,7 +814,7 @@ public class RollupJob extends AlterJob {
                 }
 
                 long rollupRowCount = 0L;
-                for (Tablet tablet : rollupIndex.getTablets()) {
+                for (LocalTablet tablet : rollupIndex.getTablets()) {
                     for (Replica replica : tablet.getReplicas()) {
                         replica.setState(ReplicaState.NORMAL);
                     }
@@ -846,7 +846,7 @@ public class RollupJob extends AlterJob {
                 if (replicaInfos != null) {
                     for (ReplicaPersistInfo info : replicaInfos) {
                         MaterializedIndex mIndex = partition.getIndex(info.getIndexId());
-                        Tablet tablet = mIndex.getTablet(info.getTabletId());
+                        LocalTablet tablet = mIndex.getTablet(info.getTabletId());
                         Replica replica = tablet.getReplicaByBackendId(info.getBackendId());
                         replica.updateVersionInfo(info.getVersion(),
                                 info.getLastFailedVersion(),
@@ -896,7 +896,7 @@ public class RollupJob extends AlterJob {
             if (!Catalog.isCheckpointThread()) {
                 // remove from inverted index
                 for (MaterializedIndex rollupIndex : partitionIdToRollupIndex.values()) {
-                    for (Tablet tablet : rollupIndex.getTablets()) {
+                    for (LocalTablet tablet : rollupIndex.getTablets()) {
                         Catalog.getCurrentInvertedIndex().deleteTablet(tablet.getId());
                     }
                 }

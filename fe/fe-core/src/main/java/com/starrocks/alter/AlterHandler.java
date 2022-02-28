@@ -32,7 +32,7 @@ import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Replica;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.FeConstants;
@@ -437,7 +437,7 @@ public abstract class AlterHandler extends MasterDaemon {
             if (index == null) {
                 throw new MetaNotFoundException("index " + task.getIndexId() + " does not exist");
             }
-            Tablet tablet = index.getTablet(task.getTabletId());
+            LocalTablet tablet = index.getTablet(task.getTabletId());
             Preconditions.checkNotNull(tablet, task.getTabletId());
             Replica replica = tablet.getReplicaById(task.getNewReplicaId());
             if (replica == null) {

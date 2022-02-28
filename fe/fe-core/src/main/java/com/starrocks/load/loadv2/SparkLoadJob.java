@@ -48,7 +48,7 @@ import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Resource;
 import com.starrocks.catalog.ScalarType;
 import com.starrocks.catalog.SparkResource;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
@@ -465,7 +465,7 @@ public class SparkLoadJob extends BulkLoadJob {
                             int schemaHash = indexToSchemaHash.get(indexId);
 
                             int bucket = 0;
-                            for (Tablet tablet : index.getTablets()) {
+                            for (LocalTablet tablet : index.getTablets()) {
                                 long tabletId = tablet.getId();
                                 totalTablets.add(tabletId);
                                 String tabletMetaStr = String.format("%d.%d.%d.%d.%d", tableId, partitionId,

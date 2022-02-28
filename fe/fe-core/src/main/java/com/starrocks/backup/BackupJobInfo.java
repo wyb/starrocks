@@ -31,7 +31,7 @@ import com.starrocks.catalog.MaterializedIndex.IndexExtState;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.FeConstants;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
@@ -261,7 +261,7 @@ public class BackupJobInfo implements Writable {
                     idxInfo.schemaHash = olapTbl.getSchemaHashByIndexId(index.getId());
                     partitionInfo.indexes.put(idxInfo.name, idxInfo);
                     // tablets
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         BackupTabletInfo tabletInfo = new BackupTabletInfo();
                         tabletInfo.id = tablet.getId();
                         tabletInfo.files.addAll(snapshotInfos.get(tablet.getId()).getFiles());

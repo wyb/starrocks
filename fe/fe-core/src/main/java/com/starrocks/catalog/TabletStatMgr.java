@@ -100,7 +100,7 @@ public class TabletStatMgr extends MasterDaemon {
                         long version = partition.getVisibleVersion();
                         for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
                             long indexRowCount = 0L;
-                            for (Tablet tablet : index.getTablets()) {
+                            for (LocalTablet tablet : index.getTablets()) {
                                 long tabletRowCount = 0L;
                                 for (Replica replica : tablet.getReplicas()) {
                                     if (replica.checkVersionCatchUp(version, false)

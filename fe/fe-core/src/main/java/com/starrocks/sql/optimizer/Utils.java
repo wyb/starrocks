@@ -13,7 +13,7 @@ import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.ScalarType;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.Type;
 import com.starrocks.external.hive.HiveColumnStats;
 import com.starrocks.external.iceberg.cost.IcebergTableStatisticCalculator;
@@ -448,7 +448,7 @@ public class Utils {
             MaterializedIndex materializedIndex = partition.getIndex(selectedIndexId);
             // TODO(kks): improve this for loop
             for (Long id : selectedTabletId) {
-                Tablet tablet = materializedIndex.getTablet(id);
+                LocalTablet tablet = materializedIndex.getTablet(id);
                 if (tablet != null && tablet.getQueryableReplicasSize(visibleVersion, schemaHash)
                         != aliveBackendSize) {
                     return false;

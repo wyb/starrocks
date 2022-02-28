@@ -25,7 +25,7 @@ import com.starrocks.catalog.MysqlTable;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Table;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.Config;
 import com.starrocks.common.IdGenerator;
@@ -505,7 +505,7 @@ public class PlanFragmentBuilder {
                     final Partition partition = referenceTable.getPartition(partitionId);
                     final MaterializedIndex selectedTable = partition.getIndex(selectedIndexId);
 
-                    final List<Tablet> tablets = Lists.newArrayList();
+                    final List<LocalTablet> tablets = Lists.newArrayList();
                     for (Long id : node.getSelectedTabletId()) {
                         if (selectedTable.getTablet(id) != null) {
                             tablets.add(selectedTable.getTablet(id));

@@ -37,7 +37,7 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.SinglePartitionInfo;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.catalog.TabletInvertedIndex;
 import com.starrocks.catalog.TabletMeta;
 import com.starrocks.catalog.Type;
@@ -135,7 +135,7 @@ abstract public class StarRocksHttpTestCase {
                         Replica.ReplicaState.NORMAL, -1, 0);
 
         // tablet
-        Tablet tablet = new Tablet(tabletId);
+        LocalTablet tablet = new LocalTablet(tabletId);
 
         // index
         MaterializedIndex baseIndex = new MaterializedIndex(testIndexId, MaterializedIndex.IndexState.NORMAL);

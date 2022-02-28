@@ -32,7 +32,7 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Replica;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Table.TableType;
-import com.starrocks.catalog.Tablet;
+import com.starrocks.catalog.LocalTablet;
 import com.starrocks.common.DdlException;
 import com.starrocks.http.ActionController;
 import com.starrocks.http.BaseRequest;
@@ -95,7 +95,7 @@ public class RowCountAction extends RestBaseAction {
                 long version = partition.getVisibleVersion();
                 for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
                     long indexRowCount = 0L;
-                    for (Tablet tablet : index.getTablets()) {
+                    for (LocalTablet tablet : index.getTablets()) {
                         long tabletRowCount = 0L;
                         for (Replica replica : tablet.getReplicas()) {
                             if (replica.checkVersionCatchUp(version, false)

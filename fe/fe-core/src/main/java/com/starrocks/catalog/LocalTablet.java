@@ -49,8 +49,8 @@ import java.util.stream.Collectors;
 /**
  * This class represents the olap tablet related metadata.
  */
-public class Tablet extends MetaObject implements Writable {
-    private static final Logger LOG = LogManager.getLogger(Tablet.class);
+public class LocalTablet extends MetaObject implements Writable {
+    private static final Logger LOG = LogManager.getLogger(LocalTablet.class);
 
     public enum TabletStatus {
         HEALTHY,
@@ -79,15 +79,15 @@ public class Tablet extends MetaObject implements Writable {
     // no need to persist
     private long lastStatusCheckTime = -1;
 
-    public Tablet() {
+    public LocalTablet() {
         this(0L, new ArrayList<>());
     }
 
-    public Tablet(long tabletId) {
+    public LocalTablet(long tabletId) {
         this(tabletId, new ArrayList<>());
     }
 
-    public Tablet(long tabletId, List<Replica> replicas) {
+    public LocalTablet(long tabletId, List<Replica> replicas) {
         this.id = tabletId;
         this.replicas = replicas;
         if (this.replicas == null) {
@@ -368,8 +368,8 @@ public class Tablet extends MetaObject implements Writable {
         }
     }
 
-    public static Tablet read(DataInput in) throws IOException {
-        Tablet tablet = new Tablet();
+    public static LocalTablet read(DataInput in) throws IOException {
+        LocalTablet tablet = new LocalTablet();
         tablet.readFields(in);
         return tablet;
     }
@@ -379,11 +379,11 @@ public class Tablet extends MetaObject implements Writable {
         if (this == obj) {
             return true;
         }
-        if (!(obj instanceof Tablet)) {
+        if (!(obj instanceof LocalTablet)) {
             return false;
         }
 
-        Tablet tablet = (Tablet) obj;
+        LocalTablet tablet = (LocalTablet) obj;
 
         if (replicas != tablet.replicas) {
             if (replicas.size() != tablet.replicas.size()) {
