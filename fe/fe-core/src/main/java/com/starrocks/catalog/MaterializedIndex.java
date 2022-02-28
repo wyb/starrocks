@@ -100,6 +100,8 @@ public class MaterializedIndex extends MetaObject implements Writable, GsonPostP
     @SerializedName(value = "rollupFinishedVersion")
     private long rollupFinishedVersion;
 
+    private boolean useCloudStorage = false;
+
     public MaterializedIndex() {
         this.state = IndexState.NORMAL;
         this.idToTablets = new HashMap<>();
@@ -198,6 +200,10 @@ public class MaterializedIndex extends MetaObject implements Writable, GsonPostP
         this.rollupFinishedVersion = -1L;
     }
 
+    public void setUseCloudStorage(boolean useCloudStorage) {
+        this.useCloudStorage = useCloudStorage;
+    }
+
     public long getDataSize() {
         long dataSize = 0;
         for (Tablet tablet : getTablets()) {
@@ -254,13 +260,25 @@ public class MaterializedIndex extends MetaObject implements Writable, GsonPostP
 
         int tabletCount = in.readInt();
         for (int i = 0; i < tabletCount; ++i) {
-            Tablet tablet = Tablet.read(in);
+            Tablet tablet = null;
+            if (useCloudStorage) {
+                tablet = CloudTablet.read(in);
+            } else {
+                tablet = Tablet.read(in);
+            }
             tablets.add(tablet);
             idToTablets.put(tablet.getId(), tablet);
         }
 
         rollupIndexId = in.readLong();
         rollupFinishedVersion = in.readLong();
+    }
+
+    public static MaterializedIndex read(DataInput in, boolean useCloudStorage) throws IOException {
+        MaterializedIndex materializedIndex = new MaterializedIndex();
+        materializedIndex.setUseCloudStorage(useCloudStorage);
+        materializedIndex.readFields(in);
+        return materializedIndex;
     }
 
     public static MaterializedIndex read(DataInput in) throws IOException {

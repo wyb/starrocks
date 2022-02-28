@@ -81,6 +81,10 @@ public class PartitionInfo implements Writable {
         return idToDataProperty.get(partitionId);
     }
 
+    public boolean useCloudStorage(long partitionId) {
+        return getDataProperty(partitionId).getStorageMedium() == TStorageMedium.S3;
+    }
+
     public void setDataProperty(long partitionId, DataProperty newDataProperty) {
         idToDataProperty.put(partitionId, newDataProperty);
     }

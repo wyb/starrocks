@@ -67,7 +67,7 @@ public class Tablet extends MetaObject implements Writable {
     }
 
     @SerializedName(value = "id")
-    private long id;
+    protected long id;
     @SerializedName(value = "replicas")
     private List<Replica> replicas;
     @SerializedName(value = "checkedVersion")

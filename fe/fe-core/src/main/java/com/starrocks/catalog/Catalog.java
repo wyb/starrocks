@@ -448,6 +448,8 @@ public class Catalog {
 
     private WorkGroupMgr workGroupMgr;
 
+    private StarosAgent starosAgent;
+
     public List<Frontend> getFrontends(FrontendNodeType nodeType) {
         if (nodeType == null) {
             // get all
@@ -623,6 +625,8 @@ public class Catalog {
         this.pluginMgr = new PluginMgr();
         this.auditEventProcessor = new AuditEventProcessor(this.pluginMgr);
         this.analyzeManager = new AnalyzeManager();
+
+        this.starosAgent = new StarosAgent();
     }
 
     public static void destroyCheckpoint() {
@@ -753,6 +757,10 @@ public class Catalog {
 
     public static AuditEventProcessor getCurrentAuditEventProcessor() {
         return getCurrentCatalog().getAuditEventProcessor();
+    }
+
+    public StarosAgent getStarosAgent() {
+        return starosAgent;
     }
 
     // Use tryLock to avoid potential dead lock
@@ -3775,6 +3783,7 @@ public class Catalog {
         List<CreateReplicaTask> tasks = new ArrayList<>((int) index.getReplicaCount());
         MaterializedIndexMeta indexMeta = table.getIndexMetaByIndexId(index.getId());
         for (Tablet tablet : index.getTablets()) {
+            //TabletMeta tabletMeta = Catalog.getCurrentInvertedIndex().getTabletMeta(tablet.getId());
             for (Replica replica : tablet.getReplicas()) {
                 CreateReplicaTask task = new CreateReplicaTask(
                         replica.getBackendId(),
@@ -4748,39 +4757,47 @@ public class Catalog {
                 backendsPerBucketSeq = Lists.newArrayList();
             }
             for (int i = 0; i < distributionInfo.getBucketNum(); ++i) {
-                // create a new tablet with random chosen backends
-                Tablet tablet = new Tablet(getNextId());
+                if (tabletMeta.useCloudStorage()) {
+                    Tablet tablet = new CloudTablet(getNextId(), starosAgent.createShard());
 
-                // add tablet to inverted index first
-                index.addTablet(tablet, tabletMeta);
-                tabletIdSet.add(tablet.getId());
-
-                // get BackendIds
-                List<Long> chosenBackendIds;
-                if (chooseBackendsArbitrary) {
-                    // This is the first colocate table in the group, or just a normal table,
-                    // randomly choose backends
-                    if (Config.enable_strict_storage_medium_check) {
-                        chosenBackendIds =
-                                chosenBackendIdBySeq(replicationNum, clusterName, tabletMeta.getStorageMedium());
-                    } else {
-                        chosenBackendIds = chosenBackendIdBySeq(replicationNum, clusterName);
-                    }
-                    backendsPerBucketSeq.add(chosenBackendIds);
+                    // add tablet to inverted index first
+                    index.addTablet(tablet, tabletMeta);
+                    tabletIdSet.add(tablet.getId());
                 } else {
-                    // get backends from existing backend sequence
-                    chosenBackendIds = backendsPerBucketSeq.get(i);
-                }
+                    // create a new tablet with random chosen backends
+                    Tablet tablet = new Tablet(getNextId());
 
-                // create replicas
-                for (long backendId : chosenBackendIds) {
-                    long replicaId = getNextId();
-                    Replica replica = new Replica(replicaId, backendId, replicaState, version,
-                            tabletMeta.getOldSchemaHash());
-                    tablet.addReplica(replica);
+                    // add tablet to inverted index first
+                    index.addTablet(tablet, tabletMeta);
+                    tabletIdSet.add(tablet.getId());
+
+                    // get BackendIds
+                    List<Long> chosenBackendIds;
+                    if (chooseBackendsArbitrary) {
+                        // This is the first colocate table in the group, or just a normal table,
+                        // randomly choose backends
+                        if (Config.enable_strict_storage_medium_check) {
+                            chosenBackendIds =
+                                    chosenBackendIdBySeq(replicationNum, clusterName, tabletMeta.getStorageMedium());
+                        } else {
+                            chosenBackendIds = chosenBackendIdBySeq(replicationNum, clusterName);
+                        }
+                        backendsPerBucketSeq.add(chosenBackendIds);
+                    } else {
+                        // get backends from existing backend sequence
+                        chosenBackendIds = backendsPerBucketSeq.get(i);
+                    }
+
+                    // create replicas
+                    for (long backendId : chosenBackendIds) {
+                        long replicaId = getNextId();
+                        Replica replica = new Replica(replicaId, backendId, replicaState, version,
+                                tabletMeta.getOldSchemaHash());
+                        tablet.addReplica(replica);
+                    }
+                    Preconditions.checkState(chosenBackendIds.size() == replicationNum,
+                            chosenBackendIds.size() + " vs. " + replicationNum);
                 }
-                Preconditions.checkState(chosenBackendIds.size() == replicationNum,
-                        chosenBackendIds.size() + " vs. " + replicationNum);
             }
 
             if (groupId != null && chooseBackendsArbitrary) {

@@ -97,6 +97,8 @@ public class Partition extends MetaObject implements Writable {
     @SerializedName(value = "distributionInfo")
     private DistributionInfo distributionInfo;
 
+    private PartitionInfo partitionInfo = null;
+
     private Partition() {
     }
 
@@ -192,6 +194,10 @@ public class Partition extends MetaObject implements Writable {
 
     public DistributionInfo getDistributionInfo() {
         return distributionInfo;
+    }
+
+    public void setPartitionInfo(PartitionInfo partitionInfo) {
+        this.partitionInfo = partitionInfo;
     }
 
     public void createRollupIndex(MaterializedIndex mIndex) {
@@ -326,6 +332,13 @@ public class Partition extends MetaObject implements Writable {
         return true;
     }
 
+    public static Partition read(DataInput in, PartitionInfo partitionInfo) throws IOException {
+        Partition partition = new Partition();
+        partition.setPartitionInfo(partitionInfo);
+        partition.readFields(in);
+        return partition;
+    }
+
     public static Partition read(DataInput in) throws IOException {
         Partition partition = new Partition();
         partition.readFields(in);
@@ -375,18 +388,20 @@ public class Partition extends MetaObject implements Writable {
         name = Text.readString(in);
         state = PartitionState.valueOf(Text.readString(in));
 
-        baseIndex = MaterializedIndex.read(in);
+        boolean useCloudStorage = partitionInfo != null && partitionInfo.useCloudStorage(id);
+
+        baseIndex = MaterializedIndex.read(in, useCloudStorage);
 
         int rollupCount = in.readInt();
         for (int i = 0; i < rollupCount; ++i) {
-            MaterializedIndex rollupTable = MaterializedIndex.read(in);
+            MaterializedIndex rollupTable = MaterializedIndex.read(in, useCloudStorage);
             idToVisibleRollupIndex.put(rollupTable.getId(), rollupTable);
         }
 
         if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_61) {
             int shadowIndexCount = in.readInt();
             for (int i = 0; i < shadowIndexCount; i++) {
-                MaterializedIndex shadowIndex = MaterializedIndex.read(in);
+                MaterializedIndex shadowIndex = MaterializedIndex.read(in, useCloudStorage);
                 idToShadowIndex.put(shadowIndex.getId(), shadowIndex);
             }
         }

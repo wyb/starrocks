@@ -82,6 +82,10 @@ public class TabletMeta {
         this.storageMedium = storageMedium;
     }
 
+    public boolean useCloudStorage() {
+        return storageMedium == TStorageMedium.S3;
+    }
+
     public int getNewSchemaHash() {
         lock.readLock().lock();
         try {
