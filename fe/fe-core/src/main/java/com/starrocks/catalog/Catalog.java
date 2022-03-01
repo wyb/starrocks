@@ -3541,11 +3541,14 @@ public class Catalog {
             ((RangePartitionInfo) partitionInfo).unprotectHandleNewSinglePartitionDesc(partition.getId(),
                     info.isTempPartition(), info.getRange(), info.getDataProperty(), info.getReplicationNum(),
                     info.isInMemory());
+            partition.setPartitionInfo(partitionInfo);
 
             if (!isCheckpointThread()) {
                 // add to inverted index
                 TabletInvertedIndex invertedIndex = Catalog.getCurrentInvertedIndex();
+                boolean useStarOS = partition.isUseStarOS();
                 for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.ALL)) {
+                    index.setUseStarOS(useStarOS);
                     long indexId = index.getId();
                     int schemaHash = olapTable.getSchemaHashByIndexId(indexId);
                     TabletMeta tabletMeta = new TabletMeta(info.getDbId(), info.getTableId(), partition.getId(),
@@ -3553,8 +3556,10 @@ public class Catalog {
                     for (Tablet tablet : index.getTablets()) {
                         long tabletId = tablet.getId();
                         invertedIndex.addTablet(tabletId, tabletMeta);
-                        for (Replica replica : ((LocalTablet) tablet).getReplicas()) {
-                            invertedIndex.addReplica(tabletId, replica);
+                        if (!useStarOS) {
+                            for (Replica replica : ((LocalTablet) tablet).getReplicas()) {
+                                invertedIndex.addReplica(tabletId, replica);
+                            }
                         }
                     }
                 }
@@ -3809,7 +3814,8 @@ public class Catalog {
         }
     }
 
-    private List<CreateReplicaTask> buildCreateReplicaTasks(long dbId, OlapTable table, List<Partition> partitions) {
+    private List<CreateReplicaTask> buildCreateReplicaTasks(long dbId, OlapTable table, List<Partition> partitions)
+            throws DdlException {
         List<CreateReplicaTask> tasks = new ArrayList<>();
         for (Partition partition : partitions) {
             tasks.addAll(buildCreateReplicaTasks(dbId, table, partition));
@@ -3817,7 +3823,8 @@ public class Catalog {
         return tasks;
     }
 
-    private List<CreateReplicaTask> buildCreateReplicaTasks(long dbId, OlapTable table, Partition partition) {
+    private List<CreateReplicaTask> buildCreateReplicaTasks(long dbId, OlapTable table, Partition partition)
+            throws DdlException {
         ArrayList<CreateReplicaTask> tasks = new ArrayList<>((int) partition.getReplicaCount());
         for (MaterializedIndex index : partition.getMaterializedIndices(IndexExtState.VISIBLE)) {
             tasks.addAll(buildCreateReplicaTasks(dbId, table, partition, index));
@@ -3826,14 +3833,22 @@ public class Catalog {
     }
 
     private List<CreateReplicaTask> buildCreateReplicaTasks(long dbId, OlapTable table, Partition partition,
-                                                            MaterializedIndex index) {
+                                                            MaterializedIndex index) throws DdlException {
         List<CreateReplicaTask> tasks = new ArrayList<>((int) index.getReplicaCount());
         boolean useStarOS = partition.isUseStarOS();
         MaterializedIndexMeta indexMeta = table.getIndexMetaByIndexId(index.getId());
         for (Tablet tablet : index.getTablets()) {
             if (useStarOS) {
+                StarOSTablet starOSTablet = (StarOSTablet) tablet;
+                long primaryBackendId = -1;
+                try {
+                    primaryBackendId = starOSTablet.getPrimaryBackendId();
+                } catch (UserException e) {
+                    throw new DdlException(e.getMessage());
+                }
+
                 CreateReplicaTask task = new CreateReplicaTask(
-                        ((StarOSTablet) tablet).getPrimaryBackendId(),
+                        primaryBackendId,
                         dbId,
                         table.getId(),
                         partition.getId(),
@@ -3852,6 +3867,7 @@ public class Catalog {
                         table.getIndexes(),
                         table.getPartitionInfo().getIsInMemory(partition.getId()),
                         table.getPartitionInfo().getTabletType(partition.getId()));
+                task.setShardId(starOSTablet.getShardId());
                 tasks.add(task);
             } else {
                 for (Replica replica : ((LocalTablet) tablet).getReplicas()) {
@@ -6530,6 +6546,12 @@ public class Catalog {
 
                         OlapTable olapTable = (OlapTable) table;
                         for (Partition partition : olapTable.getPartitions()) {
+                            if (partition.isUseStarOS()) {
+                                LOG.warn(
+                                        "StarOS partition does not support migration. db: {}, table: {}, partition: {}",
+                                        db.getId(), table.getId(), partition.getId());
+                                continue;
+                            }
                             final short replicationNum = olapTable.getPartitionInfo()
                                     .getReplicationNum(partition.getId());
                             for (MaterializedIndex materializedIndex : partition
@@ -7033,13 +7055,24 @@ public class Catalog {
             OlapTable olapTable = (OlapTable) db.getTable(info.getTblId());
             truncateTableInternal(olapTable, info.getPartitions(), info.isEntireTable());
 
+            // set partition info in Partition and useStarOS in MaterializedIndex
+            for (Partition partition : info.getPartitions()) {
+                PartitionInfo partitionInfo = olapTable.getPartitionInfo();
+                partition.setPartitionInfo(partitionInfo);
+                boolean useStarOS = partition.isUseStarOS();
+                for (MaterializedIndex mIndex : partition.getMaterializedIndices(IndexExtState.ALL)) {
+                    mIndex.setUseStarOS(useStarOS);
+                }
+            }
+
             if (!Catalog.isCheckpointThread()) {
                 // add tablet to inverted index
                 TabletInvertedIndex invertedIndex = Catalog.getCurrentInvertedIndex();
                 for (Partition partition : info.getPartitions()) {
                     long partitionId = partition.getId();
-                    TStorageMedium medium = olapTable.getPartitionInfo().getDataProperty(
-                            partitionId).getStorageMedium();
+                    TStorageMedium medium =
+                            olapTable.getPartitionInfo().getDataProperty(partitionId).getStorageMedium();
+                    boolean useStarOS = partition.isUseStarOS();
                     for (MaterializedIndex mIndex : partition.getMaterializedIndices(IndexExtState.ALL)) {
                         long indexId = mIndex.getId();
                         int schemaHash = olapTable.getSchemaHashByIndexId(indexId);
@@ -7048,8 +7081,10 @@ public class Catalog {
                         for (Tablet tablet : mIndex.getTablets()) {
                             long tabletId = tablet.getId();
                             invertedIndex.addTablet(tabletId, tabletMeta);
-                            for (Replica replica : ((LocalTablet) tablet).getReplicas()) {
-                                invertedIndex.addReplica(tabletId, replica);
+                            if (!useStarOS) {
+                                for (Replica replica : ((LocalTablet) tablet).getReplicas()) {
+                                    invertedIndex.addReplica(tabletId, replica);
+                                }
                             }
                         }
                     }
@@ -7431,6 +7466,7 @@ public class Catalog {
 
         HashMap<Long, AgentBatchTask> batchTaskMap = new HashMap<>();
         if (!isReplay) {
+            Set<Long> shardIds = Sets.newHashSet();
             // drop all replicas
             for (Partition partition : olapTable.getAllPartitions()) {
                 List<MaterializedIndex> allIndices = partition.getMaterializedIndices(IndexExtState.ALL);
@@ -7440,14 +7476,21 @@ public class Catalog {
                     for (Tablet tablet : materializedIndex.getTablets()) {
                         long tabletId = tablet.getId();
                         if (partition.isUseStarOS()) {
-                            long backendId = ((StarOSTablet) tablet).getPrimaryBackendId();
-                            DropReplicaTask dropTask = new DropReplicaTask(backendId, tabletId, schemaHash, true);
-                            AgentBatchTask batchTask = batchTaskMap.get(backendId);
-                            if (batchTask == null) {
-                                batchTask = new AgentBatchTask();
-                                batchTaskMap.put(backendId, batchTask);
+                            StarOSTablet starOSTablet = (StarOSTablet) tablet;
+                            shardIds.add(starOSTablet.getShardId());
+                            try {
+                                long backendId = starOSTablet.getPrimaryBackendId();
+                                DropReplicaTask dropTask = new DropReplicaTask(backendId, tabletId, schemaHash, true);
+                                AgentBatchTask batchTask = batchTaskMap.get(backendId);
+                                if (batchTask == null) {
+                                    batchTask = new AgentBatchTask();
+                                    batchTaskMap.put(backendId, batchTask);
+                                }
+                                batchTask.addTask(dropTask);
+                            } catch (UserException e) {
+                                LOG.warn("Failed to get primary replica. tablet id: {}, shard id: {}",
+                                        tabletId, starOSTablet.getShardId(), e);
                             }
-                            batchTask.addTask(dropTask);
                         } else {
                             List<Replica> replicas = ((LocalTablet) tablet).getReplicas();
                             for (Replica replica : replicas) {
@@ -7464,6 +7507,12 @@ public class Catalog {
                     } // end for tablets
                 } // end for indices
             } // end for partitions
+
+            // TODO: handle exception when BE or StarOS is not alive
+            // drop StarOS shards
+            if (!shardIds.isEmpty()) {
+                starOSAgent.dropShards(shardIds);
+            }
         }
         // colocation
         Catalog.getCurrentColocateIndex().removeTable(olapTable.getId());

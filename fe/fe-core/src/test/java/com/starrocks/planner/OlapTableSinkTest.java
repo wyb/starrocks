@@ -195,7 +195,7 @@ public class OlapTableSinkTest {
 
     @Test
     public void testCreateLocationWithStarOSTablet(@Mocked Catalog catalog, @Mocked StarOSAgent agent,
-                                                   @Mocked SystemInfoService systemInfoService) {
+                                                   @Mocked SystemInfoService systemInfoService) throws UserException {
         long dbId = 1L;
         long tableId = 2L;
         long partitionId = 3L;

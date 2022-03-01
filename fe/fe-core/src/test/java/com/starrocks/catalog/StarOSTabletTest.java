@@ -7,6 +7,7 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.starrocks.common.FeConstants;
+import com.starrocks.common.UserException;
 import com.starrocks.system.Backend;
 import com.starrocks.system.SystemInfoService;
 import mockit.Expectations;
@@ -65,7 +66,7 @@ public class StarOSTabletTest {
     }
 
     @Test
-    public void testGetBackend(@Mocked SystemInfoService systemInfoService) {
+    public void testGetBackend(@Mocked SystemInfoService systemInfoService) throws UserException {
         Map<Long, Backend> idToBackend = Maps.newHashMap();
         long backendId = 1L;
         idToBackend.put(backendId, new Backend(backendId, "127.0.0.1", 9050));

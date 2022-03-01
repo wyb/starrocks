@@ -2,9 +2,13 @@
 
 package com.starrocks.catalog;
 
+import com.google.common.collect.Sets;
 import com.google.gson.annotations.SerializedName;
+import com.starrocks.common.UserException;
 import com.starrocks.common.io.Text;
 import com.starrocks.persist.gson.GsonUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -18,6 +22,8 @@ import java.util.Set;
  * Data replicas are managed by object storage and compute replicas are managed by StarOS through Shard.
  */
 public class StarOSTablet extends Tablet {
+    private static final Logger LOG = LogManager.getLogger(StarOSTablet.class);
+
     private static final String JSON_KEY_SHARD_ID = "shardId";
     private static final String JSON_KEY_DATA_SIZE = "dataSize";
     private static final String JSON_KEY_ROW_COUNT = "rowCount";
@@ -58,13 +64,18 @@ public class StarOSTablet extends Tablet {
         this.rowCount = rowCount;
     }
 
-    public long getPrimaryBackendId() {
+    public long getPrimaryBackendId() throws UserException {
         return Catalog.getCurrentCatalog().getStarOSAgent().getPrimaryBackendIdByShard(shardId);
     }
 
     @Override
     public Set<Long> getBackendIds() {
-        return Catalog.getCurrentCatalog().getStarOSAgent().getBackendIdsByShard(shardId);
+        try {
+            return Catalog.getCurrentCatalog().getStarOSAgent().getBackendIdsByShard(shardId);
+        } catch (UserException e) {
+            LOG.warn("Failed to get backends by shard. tablet id: {}, shard id: {}", id, shardId, e);
+            return Sets.newHashSet();
+        }
     }
 
     // visibleVersion and schemaHash is not used

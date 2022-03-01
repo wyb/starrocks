@@ -100,6 +100,9 @@ public class MigrationAction extends RestBaseAction {
                 OlapTable olapTable = (OlapTable) table;
 
                 for (Partition partition : olapTable.getPartitions()) {
+                    if (partition.isUseStarOS()) {
+                        continue;
+                    }
                     String partitionName = partition.getName();
                     MaterializedIndex baseIndex = partition.getBaseIndex();
                     for (Tablet tablet : baseIndex.getTablets()) {
@@ -126,6 +129,9 @@ public class MigrationAction extends RestBaseAction {
                     tableName = table.getName();
 
                     for (Partition partition : olapTable.getPartitions()) {
+                        if (partition.isUseStarOS()) {
+                            continue;
+                        }
                         String partitionName = partition.getName();
                         MaterializedIndex baseIndex = partition.getBaseIndex();
                         for (Tablet tablet : baseIndex.getTablets()) {
