@@ -159,8 +159,8 @@ void BaseAndCumulativeCompactionPolicy::debug_rowsets(CompactionType type,
     LOG(INFO) << "pick compaction input rowsets. tablet: " << _tablet->id() << ", type: " << to_string(type)
               << ", version: " << _tablet_metadata->version()
               << ", cumulative point: " << _tablet_metadata->cumulative_point()
-              << ", input rowsets size: " << input_rowset_ids.size()
-              << ", input rowsets: [" << JoinInts(input_rowset_ids, ",") + "]"
+              << ", input rowsets size: " << input_rowset_ids.size() << ", input rowsets: ["
+              << JoinInts(input_rowset_ids, ",") + "]"
               << ", rowsets: [" << JoinInts(rowset_ids, ",") << "]"
               << ", delete rowsets: [" << JoinInts(delete_rowset_ids, ",") + "]";
 }

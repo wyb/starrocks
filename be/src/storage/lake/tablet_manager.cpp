@@ -484,8 +484,8 @@ static Status apply_compaction_log(const TxnLogPB_OpCompaction& op_compaction, T
         }
     }
     LOG(INFO) << "compaction finish. tablet: " << metadata->id() << ", version: " << metadata->version()
-              << ", cumulative point: " << metadata->cumulative_point()
-              << ", rowsets: [" << JoinInts(rowset_ids, ",") << "]"
+              << ", cumulative point: " << metadata->cumulative_point() << ", rowsets: [" << JoinInts(rowset_ids, ",")
+              << "]"
               << ", delete rowsets: [" << JoinInts(delete_rowset_ids, ",") + "]";
     return Status::OK();
 }
