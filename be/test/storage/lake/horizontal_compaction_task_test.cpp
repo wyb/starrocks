@@ -458,7 +458,7 @@ protected:
     int64_t _txn_id = 1002;
 };
 
-TEST_F(UniqueKeyHorizontalCompactionWithDeleteTest, test1) {
+TEST_F(UniqueKeyHorizontalCompactionWithDeleteTest, test_base_compaction_with_delete) {
     // Prepare data for writing
     auto chunk0 = generate_data(kChunkSize);
     auto indexes = std::vector<uint32_t>(kChunkSize);
