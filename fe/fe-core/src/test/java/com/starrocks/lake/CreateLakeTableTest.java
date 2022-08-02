@@ -12,6 +12,7 @@ import com.starrocks.catalog.Table;
 import com.starrocks.cluster.ClusterNamespace;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
+import com.starrocks.common.DdlException;
 import com.starrocks.common.ExceptionChecker;
 import com.starrocks.common.UserException;
 import com.starrocks.common.jmockit.Deencapsulation;
@@ -206,11 +207,31 @@ public class CreateLakeTableTest {
     }
 
     @Test
-    public void testCreateLakeTableException() {
+    public void testCreateLakeTableException(@Mocked StarOSAgent agent) throws UserException {
+        ObjectStorageInfo objectStorageInfo = ObjectStorageInfo.newBuilder().setObjectUri("s3://bucket/1/").build();
+        ShardStorageInfo shardStorageInfo =
+                ShardStorageInfo.newBuilder().setObjectStorageInfo(objectStorageInfo).build();
+
+        new Expectations() {
+            {
+                agent.getServiceShardStorageInfo();
+                result = shardStorageInfo;
+            }
+        };
+
+        Deencapsulation.setField(GlobalStateMgr.getCurrentState(), "starOSAgent", agent);
+
         // primary key type is not supported
         ExceptionChecker.expectThrowsWithMsg(AnalysisException.class, "Lake table does not support primary key type",
                 () -> createTable(
-                        "create table lake_test.single_partition_duplicate_key (key1 int, key2 varchar(10))\n" +
+                        "create table lake_test.primary_key_not_support (key1 int, key2 varchar(10))\n" +
                                 "engine = starrocks primary key (key1) distributed by hash(key1) buckets 3"));
+
+        // replication num is not 1
+        ExceptionChecker.expectThrowsWithMsg(DdlException.class, "replication_num should be 1",
+                () -> createTable(
+                        "create table lake_test.replication_num_not_1 (key1 int, key2 varchar(10))\n" +
+                                "engine = starrocks duplicate key (key1) distributed by hash(key1) buckets 3\n" +
+                                "properties('replication_num' = '3')"));
     }
 }

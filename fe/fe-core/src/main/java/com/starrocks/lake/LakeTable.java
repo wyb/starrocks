@@ -63,6 +63,10 @@ public class LakeTable extends OlapTable {
         return tableProperty.getStorageInfo().getShardStorageInfo();
     }
 
+    public StorageInfo getStorageInfo() {
+        return tableProperty.getStorageInfo();
+    }
+
     public void setStorageInfo(ShardStorageInfo shardStorageInfo, boolean enableCache, long cacheTtlS)
             throws DdlException {
         String storageGroup;

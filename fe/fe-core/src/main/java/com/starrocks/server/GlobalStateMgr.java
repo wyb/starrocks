@@ -163,8 +163,10 @@ import com.starrocks.journal.JournalInconsistentException;
 import com.starrocks.journal.JournalTask;
 import com.starrocks.journal.JournalWriter;
 import com.starrocks.journal.bdbje.Timestamp;
+import com.starrocks.lake.LakeTable;
 import com.starrocks.lake.ShardManager;
 import com.starrocks.lake.StarOSAgent;
+import com.starrocks.lake.StorageInfo;
 import com.starrocks.lake.compaction.CompactionDispatchDaemon;
 import com.starrocks.lake.compaction.CompactionManager;
 import com.starrocks.leader.Checkpoint;
@@ -2083,6 +2085,15 @@ public class GlobalStateMgr {
             sb.append(StatsConstants.TABLE_PROPERTY_SEPARATOR).append(PropertyAnalyzer.PROPERTIES_ENABLE_PERSISTENT_INDEX)
                     .append("\" = \"");
             sb.append(olapTable.enablePersistentIndex()).append("\"");
+
+            // lake storage cache property
+            if (olapTable.isLakeTable()) {
+                StorageInfo storageInfo = ((LakeTable) olapTable).getStorageInfo();
+                sb.append(StatsConstants.TABLE_PROPERTY_SEPARATOR).append(PropertyAnalyzer.PROPERTIES_ENABLE_STORAGE_CACHE)
+                        .append("\" = \"").append(storageInfo.isEnableStorageCache()).append("\"");
+                sb.append(StatsConstants.TABLE_PROPERTY_SEPARATOR).append(PropertyAnalyzer.PROPERTIES_STORAGE_CACHE_TTL)
+                        .append("\" = \"").append(storageInfo.getStorageCacheTtlS()).append("\"");
+            }
 
             // storage media
             Map<String, String> properties = olapTable.getTableProperty().getProperties();

@@ -1950,8 +1950,15 @@ public class LocalMetastore implements ConnectorMetadata {
             boolean isReplicationNumSet =
                     properties != null && properties.containsKey(PropertyAnalyzer.PROPERTIES_REPLICATION_NUM);
             replicationNum = PropertyAnalyzer.analyzeReplicationNum(properties, replicationNum);
-            if (isReplicationNumSet) {
-                olapTable.setReplicationNum(replicationNum);
+            if (olapTable.isLakeTable()) {
+                if (isReplicationNumSet && replicationNum != 1) {
+                    throw new DdlException(PropertyAnalyzer.PROPERTIES_REPLICATION_NUM + " should be 1");
+                }
+                olapTable.setReplicationNum((short) 1);
+            } else {
+                if (isReplicationNumSet) {
+                    olapTable.setReplicationNum(replicationNum);
+                }
             }
         } catch (AnalysisException e) {
             throw new DdlException(e.getMessage());
