@@ -262,6 +262,7 @@ private:
     roaring_uint32_iterator_t _roaring_iter;
 
     std::unique_ptr<RandomAccessFile> _rfile;
+    std::unordered_map<ColumnId, std::unique_ptr<RandomAccessFile>> _column_files;
 
     SparseRange _scan_range;
     SparseRangeIterator _range_iter;
@@ -403,7 +404,9 @@ Status SegmentIterator::_init_column_iterators(const Schema& schema) {
             ColumnIteratorOptions iter_opts;
             iter_opts.stats = _opts.stats;
             iter_opts.use_page_cache = _opts.use_page_cache;
-            iter_opts.read_file = _rfile.get();
+            ASSIGN_OR_RETURN(auto rfile, _opts.fs->new_random_access_file(_segment->file_name()));
+            iter_opts.read_file = rfile.get();
+            _column_files[cid] = std::move(rfile);
             iter_opts.check_dict_encoding = check_dict_enc;
             iter_opts.reader_type = _opts.reader_type;
             RETURN_IF_ERROR(_column_iterators[cid]->init(iter_opts));
