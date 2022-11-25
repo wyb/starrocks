@@ -648,15 +648,15 @@ public final class SparkDpp implements java.io.Serializable {
      */
     private Dataset<Row> loadDataFromPath(SparkSession spark,
                                           EtlJobConfig.EtlFileGroup fileGroup,
-                                          String fileUrl,
+                                          List<String> fileUrls,
                                           EtlJobConfig.EtlIndex baseIndex) throws SparkDppException {
-        List<String> columnValueFromPath = DppUtils.parseColumnsFromPath(fileUrl, fileGroup.columnsFromPath);
+        List<String> columnValueFromPath = DppUtils.parseColumnsFromPath(fileUrls.get(0), fileGroup.columnsFromPath);
         StructType srcSchema = constructSrcSchema(fileGroup, baseIndex);
         Dataset<Row> sourceData = null;
         if (StringUtils.equalsIgnoreCase(fileGroup.fileFormat, "orc")) {
-            sourceData = spark.read().orc(fileUrl);
+            sourceData = spark.read().orc(JavaConverters.asScalaIteratorConverter(fileUrls.iterator()).asScala().toSeq());
         } else if (StringUtils.equalsIgnoreCase(fileGroup.fileFormat, "parquet")) {
-            sourceData = spark.read().parquet(fileUrl);
+            sourceData = spark.read().parquet(JavaConverters.asScalaIteratorConverter(fileUrls.iterator()).asScala().toSeq());
         }
         if (fileGroup.columnsFromPath != null) {
             for (int i = 0; i < fileGroup.columnsFromPath.size(); i++) {
@@ -670,7 +670,6 @@ public final class SparkDpp implements java.io.Serializable {
             throw new SparkDppException("The schema of file and table must be equal. " +
                     "file schema: " + sourceData.schema().treeString() + ", table schema: " + srcSchema.treeString());
         }
-        scannedRowsAcc.add(sourceData.count());
         // TODO: data quality check for orc/parquet load
         // Check process is roughly the same as the hive load, but there are some bugs to fix.
         // Uncomment below when method checkDataFromHiveWithStrictMode is ready.
@@ -927,6 +926,8 @@ public final class SparkDpp implements java.io.Serializable {
                 if (fileStatuses == null) {
                     throw new SparkDppException("fs list status failed: " + filePath);
                 }
+
+                List<String> newFilePaths = new ArrayList<>();
                 for (FileStatus fileStatus : fileStatuses) {
                     if (fileStatus.isDirectory()) {
                         continue;
@@ -936,11 +937,23 @@ public final class SparkDpp implements java.io.Serializable {
                     if (fileGroup.fileFormat != null &&
                             (StringUtils.equalsIgnoreCase(fileGroup.fileFormat, "orc") ||
                                     StringUtils.equalsIgnoreCase(fileGroup.fileFormat, "parquet"))) {
-                        dataframe = loadDataFromPath(spark, fileGroup, fileStatus.getPath().toString(), baseIndex);
+                        newFilePaths.add(fileStatus.getPath().toString());
                     } else {
                         dataframe = loadDataFromPath(spark, fileGroup, fileStatus.getPath().toString(),
                                 baseIndex, baseIndex.columns);
+                        dataframe = convertSrcDataframeToDstDataframe(baseIndex, dataframe, dstTableSchema, fileGroup);
+                        if (fileGroupDataframe == null) {
+                            fileGroupDataframe = dataframe;
+                        } else {
+                            fileGroupDataframe = fileGroupDataframe.union(dataframe);
+                        }
                     }
+                }
+
+                if (fileGroup.fileFormat != null &&
+                        (StringUtils.equalsIgnoreCase(fileGroup.fileFormat, "orc") ||
+                                StringUtils.equalsIgnoreCase(fileGroup.fileFormat, "parquet"))) {
+                    dataframe = loadDataFromPath(spark, fileGroup, newFilePaths, baseIndex);
                     dataframe = convertSrcDataframeToDstDataframe(baseIndex, dataframe, dstTableSchema, fileGroup);
                     if (fileGroupDataframe == null) {
                         fileGroupDataframe = dataframe;
@@ -953,6 +966,14 @@ public final class SparkDpp implements java.io.Serializable {
                 throw e;
             }
         }
+
+        if (fileGroup.fileFormat != null &&
+                (StringUtils.equalsIgnoreCase(fileGroup.fileFormat, "orc") ||
+                        StringUtils.equalsIgnoreCase(fileGroup.fileFormat, "parquet"))) {
+
+            scannedRowsAcc.add(fileGroupDataframe.count());
+        }
+
         return fileGroupDataframe;
     }
 
