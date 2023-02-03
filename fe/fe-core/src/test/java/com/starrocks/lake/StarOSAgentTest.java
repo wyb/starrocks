@@ -30,6 +30,7 @@ import com.staros.proto.ReplicaRole;
 import com.staros.proto.ShardGroupInfo;
 import com.staros.proto.ShardInfo;
 import com.staros.proto.StatusCode;
+import com.staros.proto.WorkerGroupDetailInfo;
 import com.staros.proto.WorkerInfo;
 import com.staros.proto.WorkerState;
 import com.starrocks.common.DdlException;
@@ -37,6 +38,8 @@ import com.starrocks.common.ExceptionChecker;
 import com.starrocks.common.UserException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.system.Backend;
+import com.starrocks.system.LocalSystemInfoService;
 import com.starrocks.system.SystemInfoService;
 import mockit.Expectations;
 import mockit.Mock;
@@ -307,7 +310,7 @@ public class StarOSAgentTest {
 
 
     @Test
-    public void testGetBackendByShard() throws StarClientException, UserException {
+    public void testGetBackendByShard(@Mocked LocalSystemInfoService s) throws StarClientException, UserException {
         ReplicaInfo replica1 = ReplicaInfo.newBuilder()
                 .setReplicaRole(ReplicaRole.PRIMARY)
                 .setWorkerInfo(WorkerInfo.newBuilder().setWorkerId(1L).setWorkerState(WorkerState.ON).build())
@@ -328,11 +331,11 @@ public class StarOSAgentTest {
         new MockUp<GlobalStateMgr>() {
             @Mock
             public SystemInfoService getCurrentSystemInfo() {
-                return service;
+                return s;
             }
         };
 
-        new MockUp<SystemInfoService>() {
+        new MockUp<LocalSystemInfoService>() {
             @Mock
             public long getBackendIdWithStarletPort(String host, int starletPort) {
                 return -1L;
@@ -386,4 +389,63 @@ public class StarOSAgentTest {
         ExceptionChecker.expectThrows(NullPointerException.class, () -> starosAgent.getWorkerId(workerHost));
     }
 
+    private WorkerInfo newWorkerInfo(long workerId, String ipPort, int beHeartbeatPort, int bePort, int beHttpPort,
+                                     int beBrpcPort) {
+        return WorkerInfo.newBuilder().setWorkerId(workerId).setIpPort(ipPort)
+                .putWorkerProperties("be_heartbeat_port", String.valueOf(beHeartbeatPort))
+                .putWorkerProperties("be_port", String.valueOf(bePort))
+                .putWorkerProperties("be_http_port", String.valueOf(beHttpPort))
+                .putWorkerProperties("be_brpc_port", String.valueOf(beBrpcPort))
+                .build();
+    }
+
+    @Test
+    public void testGetWorkers() throws StarClientException, UserException {
+        String serviceId = "1";
+        Deencapsulation.setField(starosAgent, "serviceId", serviceId);
+
+        long workerId0 = 10000L;
+        WorkerInfo worker0 = newWorkerInfo(workerId0, "127.0.0.1:8090", 9050, 9060, 8040, 8060);
+        long workerId1 = 10001L;
+        WorkerInfo worker1 = newWorkerInfo(workerId1, "127.0.0.2:8091", 9051, 9061, 8041, 8061);
+        long groupId0 = 10L;
+        WorkerGroupDetailInfo group0 = WorkerGroupDetailInfo.newBuilder().setGroupId(groupId0).addWorkersInfo(worker0)
+                .addWorkersInfo(worker1).build();
+
+        long workerId2 = 10002L;
+        WorkerInfo worker2 = newWorkerInfo(workerId2, "127.0.0.3:8092", 9052, 9062, 8042, 8062);
+        long groupId1 = 11L;
+        WorkerGroupDetailInfo group1 = WorkerGroupDetailInfo.newBuilder().setGroupId(groupId1).addWorkersInfo(worker2)
+                .build();
+
+        new Expectations() {
+            {
+                client.getWorkerInfo(serviceId, workerId0);
+                minTimes = 0;
+                result = worker0;
+
+                client.listWorkerGroup(serviceId, Lists.newArrayList(groupId0), true);
+                minTimes = 0;
+                result = Lists.newArrayList(group0);
+
+                client.listWorkerGroup(serviceId, Lists.newArrayList(), true);
+                minTimes = 0;
+                result = Lists.newArrayList(group0, group1);
+            }
+        };
+
+        Backend backend = starosAgent.getWorkerById(workerId0);
+        Assert.assertEquals(workerId0, backend.getId());
+        Assert.assertEquals("127.0.0.1", backend.getHost());
+        Assert.assertEquals(9050, backend.getHeartbeatPort());
+        Assert.assertEquals(9060, backend.getBePort());
+        Assert.assertEquals(8040, backend.getHttpPort());
+        Assert.assertEquals(8060, backend.getBrpcPort());
+
+        List<Backend> backends = starosAgent.getWorkersByWorkerGroup(Lists.newArrayList(groupId0));
+        Assert.assertEquals(2, backends.size());
+
+        backends = starosAgent.getWorkers();
+        Assert.assertEquals(3, backends.size());
+    }
 }

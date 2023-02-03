@@ -39,12 +39,14 @@ import com.staros.proto.ShardGroupInfo;
 import com.staros.proto.ShardInfo;
 import com.staros.proto.StatusCode;
 import com.staros.proto.UpdateMetaGroupInfo;
+import com.staros.proto.WorkerGroupDetailInfo;
 import com.staros.proto.WorkerInfo;
 import com.staros.util.LockCloseable;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.UserException;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.system.Backend;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -482,5 +484,46 @@ public class StarOSAgent {
     }
 
     public void modifyWorkerGroup(long groupId, String size) throws DdlException {
+    }
+
+    private Backend workerToBackend(WorkerInfo workerInfo) {
+        String workerAddr = workerInfo.getIpPort();
+        String[] pair = workerAddr.split(":");
+        int heartbeatPort = Integer.parseInt(workerInfo.getWorkerPropertiesMap().get("be_heartbeat_port"));
+        int bePort = Integer.parseInt(workerInfo.getWorkerPropertiesMap().get("be_port"));
+        int beHttpPort = Integer.parseInt(workerInfo.getWorkerPropertiesMap().get("be_http_port"));
+        int beBrpcPort = Integer.parseInt(workerInfo.getWorkerPropertiesMap().get("be_brpc_port"));
+
+        Backend backend = new Backend(workerInfo.getWorkerId(), pair[0], heartbeatPort);
+        backend.setIsAlive(true);
+        backend.setBePort(bePort);
+        backend.setHttpPort(beHttpPort);
+        backend.setBrpcPort(beBrpcPort);
+        return backend;
+    }
+
+    public Backend getWorkerById(long workerId) throws UserException {
+        prepare();
+        try {
+            WorkerInfo workerInfo = client.getWorkerInfo(serviceId, workerId);
+            return workerToBackend(workerInfo);
+        } catch (StarClientException e) {
+            throw new UserException("Failed to get worker by id. error: " + e.getMessage());
+        }
+    }
+
+    public List<Backend> getWorkersByWorkerGroup(List<Long> workerGroupIds) throws UserException {
+        prepare();
+        try {
+            List<WorkerGroupDetailInfo> workerGroupInfos = client.listWorkerGroup(serviceId, workerGroupIds, true);
+            return workerGroupInfos.stream().flatMap(g -> g.getWorkersInfoList().stream()).map(w -> workerToBackend(w))
+                    .collect(Collectors.toList());
+        } catch (StarClientException e) {
+            throw new UserException("Failed to get workers by group id. error: " + e.getMessage());
+        }
+    }
+
+    public List<Backend> getWorkers() throws UserException {
+        return getWorkersByWorkerGroup(Lists.newArrayList());
     }
 }

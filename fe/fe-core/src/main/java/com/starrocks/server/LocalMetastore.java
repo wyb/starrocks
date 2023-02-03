@@ -4362,25 +4362,28 @@ public class LocalMetastore implements ConnectorMetadata {
 
     public void initDefaultCluster() {
         final List<Long> backendList = Lists.newArrayList();
-        final List<Backend> defaultClusterBackends = systemInfoService.getBackends();
-        for (Backend backend : defaultClusterBackends) {
-            backendList.add(backend.getId());
+
+        if (!Config.use_staros) {
+            final List<Backend> defaultClusterBackends = systemInfoService.getBackends();
+            for (Backend backend : defaultClusterBackends) {
+                backendList.add(backend.getId());
+            }
+
+            // make sure one host hold only one backend.
+            Set<String> beHost = Sets.newHashSet();
+            for (Backend be : defaultClusterBackends) {
+                if (beHost.contains(be.getHost())) {
+                    // we can not handle this situation automatically.
+                    LOG.error("found more than one backends in same host: {}", be.getHost());
+                    System.exit(-1);
+                } else {
+                    beHost.add(be.getHost());
+                }
+            }
         }
 
         final long id = getNextId();
         final Cluster cluster = new Cluster(SystemInfoService.DEFAULT_CLUSTER, id);
-
-        // make sure one host hold only one backend.
-        Set<String> beHost = Sets.newHashSet();
-        for (Backend be : defaultClusterBackends) {
-            if (beHost.contains(be.getHost())) {
-                // we can not handle this situation automatically.
-                LOG.error("found more than one backends in same host: {}", be.getHost());
-                System.exit(-1);
-            } else {
-                beHost.add(be.getHost());
-            }
-        }
 
         // we create default_cluster to meet the need for ease of use, because
         // most users hava no multi tenant needs.

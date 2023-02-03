@@ -61,6 +61,7 @@ import com.starrocks.sql.ast.CreateRoutineLoadStmt;
 import com.starrocks.sql.ast.PauseRoutineLoadStmt;
 import com.starrocks.sql.ast.ResumeRoutineLoadStmt;
 import com.starrocks.sql.ast.StopRoutineLoadStmt;
+import com.starrocks.system.LocalSystemInfoService;
 import com.starrocks.system.SystemInfoService;
 import com.starrocks.thrift.TResourceInfo;
 import com.starrocks.utframe.UtFrameUtils;
@@ -87,7 +88,7 @@ public class RoutineLoadManagerTest {
     private static final Logger LOG = LogManager.getLogger(RoutineLoadManagerTest.class);
 
     @Mocked
-    private SystemInfoService systemInfoService;
+    private LocalSystemInfoService systemInfoService;
 
     @Test
     public void testAddJobByStmt(@Injectable Auth auth,

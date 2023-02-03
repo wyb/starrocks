@@ -607,9 +607,14 @@ public class GlobalStateMgr {
         this.metaContext = new MetaContext();
         this.metaContext.setThreadLocalInfo();
 
-        this.stat = new TabletSchedulerStat();
+        // starOSAgent is used in LakeSystemInfoService and must be newed before NodeMgr
+        if (Config.use_staros) {
+            this.starOSAgent = new StarOSAgent();
+        }
+
         this.nodeMgr = new NodeMgr(isCkptGlobalState, this);
         this.globalFunctionMgr = new GlobalFunctionMgr();
+        this.stat = new TabletSchedulerStat();
         this.tabletScheduler = new TabletScheduler(this, nodeMgr.getClusterInfo(), tabletInvertedIndex, stat);
         this.tabletChecker = new TabletChecker(this, nodeMgr.getClusterInfo(), tabletScheduler, stat);
 
@@ -641,10 +646,6 @@ public class GlobalStateMgr {
         this.pluginMgr = new PluginMgr();
         this.auditEventProcessor = new AuditEventProcessor(this.pluginMgr);
         this.analyzeManager = new AnalyzeManager();
-
-        if (Config.use_staros) {
-            this.starOSAgent = new StarOSAgent();
-        }
 
         this.localMetastore = new LocalMetastore(this, recycleBin, colocateTableIndex, nodeMgr.getClusterInfo());
         this.warehouseMgr = new WarehouseManager();
