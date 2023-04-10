@@ -81,6 +81,7 @@ import com.starrocks.common.UserException;
 import com.starrocks.common.util.DebugUtil;
 import com.starrocks.http.BaseAction;
 import com.starrocks.http.UnauthorizedException;
+import com.starrocks.lake.LakeTablet;
 import com.starrocks.leader.LeaderImpl;
 import com.starrocks.load.loadv2.LoadJob;
 import com.starrocks.load.loadv2.ManualLoadTxnCommitAttachment;
@@ -1782,24 +1783,38 @@ public class FrontendServiceImpl implements FrontendService.Iface {
             int quorum = olapTable.getPartitionInfo().getQuorumNum(partition.getId(), ((OlapTable) table).writeQuorum());
             for (MaterializedIndex index : partition.getMaterializedIndices(MaterializedIndex.IndexExtState.ALL)) {
                 for (Tablet tablet : index.getTablets()) {
-                    // we should ensure the replica backend is alive
-                    // otherwise, there will be a 'unknown node id, id=xxx' error for stream load
-                    LocalTablet localTablet = (LocalTablet) tablet;
-                    Multimap<Replica, Long> bePathsMap =
-                            localTablet.getNormalReplicaBackendPathMap(olapTable.getClusterId());
-                    if (bePathsMap.keySet().size() < quorum) {
-                        errorStatus.setError_msgs(Lists.newArrayList(
-                                "Tablet lost replicas. Check if any backend is down or not. tablet_id: "
-                                        + tablet.getId() + ", backends: " +
-                                        Joiner.on(",").join(localTablet.getBackends())));
-                        result.setStatus(errorStatus);
-                        return result;
+                    if (olapTable.isCloudNativeTable()) {
+                        try {
+                            tablets.add(new TTabletLocation(
+                                    tablet.getId(), Lists.newArrayList(((LakeTablet) tablet).getPrimaryBackendId())));
+                        } catch (UserException e) {
+                            LOG.warn(e);
+                            errorStatus.setError_msgs(Lists.newArrayList(
+                                    String.format("Fail to get primary backend id. tablet_id:%d, error:%s",
+                                            tablet.getId(), e.getMessage())));
+                            result.setStatus(errorStatus);
+                            return result;
+                        }
+                    } else {
+                        // we should ensure the replica backend is alive
+                        // otherwise, there will be a 'unknown node id, id=xxx' error for stream load
+                        LocalTablet localTablet = (LocalTablet) tablet;
+                        Multimap<Replica, Long> bePathsMap =
+                                localTablet.getNormalReplicaBackendPathMap(olapTable.getClusterId());
+                        if (bePathsMap.keySet().size() < quorum) {
+                            errorStatus.setError_msgs(Lists.newArrayList(
+                                    "Tablet lost replicas. Check if any backend is down or not. tablet_id: "
+                                            + tablet.getId() + ", backends: " +
+                                            Joiner.on(",").join(localTablet.getBackends())));
+                            result.setStatus(errorStatus);
+                            return result;
+                        }
+                        // replicas[0] will be the primary replica
+                        // getNormalReplicaBackendPathMap returns a linkedHashMap, it's keysets is stable
+                        List<Replica> replicas = Lists.newArrayList(bePathsMap.keySet());
+                        tablets.add(new TTabletLocation(tablet.getId(), replicas.stream().map(Replica::getBackendId)
+                                .collect(Collectors.toList())));
                     }
-                    // replicas[0] will be the primary replica
-                    // getNormalReplicaBackendPathMap returns a linkedHashMap, it's keysets is stable 
-                    List<Replica> replicas = Lists.newArrayList(bePathsMap.keySet());
-                    tablets.add(new TTabletLocation(tablet.getId(), replicas.stream().map(Replica::getBackendId)
-                            .collect(Collectors.toList())));
                 }
             }
         }
