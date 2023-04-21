@@ -29,6 +29,8 @@ namespace lake {
 
 class Tablet;
 
+enum WriterType : int { kHorizontal = 0, kVertical = 1 };
+
 // Basic interface for tablet writers.
 class TabletWriter {
 public:
@@ -47,7 +49,17 @@ public:
     // It's guaranteed that the elements in each chunk are arranged in ascending
     // order, and the elements among all chunks written before `flush()` are also
     // arranged in ascending order.
-    virtual Status write(const starrocks::Chunk& data) = 0;
+    virtual Status write(const Chunk& data) = 0;
+
+    // Writes partial columns data to this rowset.
+    //
+    // It's guaranteed that the elements in each chunk are arranged in ascending
+    // order by keys, and the elements among all chunks written before `flush()` are also
+    // arranged in ascending order.
+    virtual Status write_columns(const Chunk& data, const std::vector<uint32_t>& column_indexes, bool is_key) = 0;
+
+    // Flush columns data when write partial columns finish.
+    virtual Status flush_columns() = 0;
 
     // Write del file to this rowset. PK table only
     virtual Status flush_del_file(const Column& deletes) = 0;

@@ -44,6 +44,7 @@ template <typename T>
 class MetadataIterator;
 using TabletMetadataIter = MetadataIterator<TabletMetadataPtr>;
 class UpdateManager;
+enum WriterType : int;
 
 class Tablet {
 public:
@@ -87,7 +88,11 @@ public:
 
     Status delete_tablet_metadata_lock(int64_t version, int64_t expire_time);
 
+    // New horizontal writer
     StatusOr<std::unique_ptr<TabletWriter>> new_writer();
+
+    // segment_max_rows is used in vertical writer
+    StatusOr<std::unique_ptr<TabletWriter>> new_writer(WriterType type, uint32_t max_rows_per_segment);
 
     StatusOr<std::shared_ptr<TabletReader>> new_reader(int64_t version, Schema schema);
 

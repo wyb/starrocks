@@ -76,11 +76,19 @@ Status Tablet::delete_tablet_metadata_lock(int64_t version, int64_t expire_time)
 }
 
 StatusOr<std::unique_ptr<TabletWriter>> Tablet::new_writer() {
+    return new_writer(kHorizontal, 0);
+}
+
+StatusOr<std::unique_ptr<TabletWriter>> Tablet::new_writer(WriterType type, uint32_t max_rows_per_segment) {
     ASSIGN_OR_RETURN(auto tablet_schema, get_schema());
     if (tablet_schema->keys_type() == KeysType::PRIMARY_KEYS) {
         return std::make_unique<PkTabletWriter>(tablet_schema, *this);
     } else {
-        return std::make_unique<GeneralTabletWriter>(tablet_schema, *this);
+        if (type == kHorizontal) {
+            return std::make_unique<GeneralTabletWriter>(tablet_schema, *this);
+        } else {
+            return std::make_unique<VerticalGeneralTabletWriter>(tablet_schema, *this, max_rows_per_segment);
+        }
     }
 }
 

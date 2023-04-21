@@ -42,6 +42,14 @@ public:
 
     Status write(const starrocks::Chunk& data) override;
 
+    Status write_columns(const Chunk& data, const std::vector<uint32_t>& column_indexes, bool is_key) override {
+        return Status::NotSupported("GeneralTabletWriter write_columns not support");
+    }
+
+    Status flush_columns() override {
+        return Status::NotSupported("GeneralTabletWriter flush_columns not support");
+    }
+
     Status flush_del_file(const Column& deletes) override {
         return Status::NotSupported("GeneralTabletWriter flush_del_file not support");
     }
@@ -66,6 +74,62 @@ private:
 
     Tablet _tablet;
     std::unique_ptr<SegmentWriter> _seg_writer;
+    std::vector<std::string> _files;
+    int64_t _num_rows = 0;
+    int64_t _data_size = 0;
+    uint32_t _seg_id = 0;
+    bool _finished = false;
+};
+
+class VerticalGeneralTabletWriter : public TabletWriter {
+public:
+    explicit VerticalGeneralTabletWriter(std::shared_ptr<const TabletSchema> tschema, Tablet tablet,
+                                         uint32_t max_rows_per_segment);
+
+    ~VerticalGeneralTabletWriter() override;
+
+    DISALLOW_COPY(VerticalGeneralTabletWriter);
+
+    int64_t tablet_id() const override { return _tablet.id(); }
+
+    Status open() override;
+
+    Status write(const starrocks::Chunk& data) override {
+        return Status::NotSupported("VerticalGeneralTabletWriter write not support");
+    }
+
+    Status write_columns(const Chunk& data, const std::vector<uint32_t>& column_indexes, bool is_key) override;
+
+    Status flush_columns() override;
+
+    Status flush_del_file(const Column& deletes) override {
+        return Status::NotSupported("VerticalGeneralTabletWriter flush_del_file not support");
+    }
+
+    Status flush() override;
+
+    Status finish() override;
+
+    void close() override;
+
+    std::vector<std::string> files() const override { return _files; }
+
+    int64_t data_size() const override { return _data_size; }
+
+    int64_t num_rows() const override { return _num_rows; }
+
+    RowsetTxnMetaPB* rowset_txn_meta() override { return nullptr; }
+
+private:
+    StatusOr<std::unique_ptr<SegmentWriter>> create_segment_writer(const std::vector<uint32_t>& column_indexes,
+                                                                   bool is_key);
+
+    Status flush_columns(std::unique_ptr<SegmentWriter>* segment_writer);
+
+    Tablet _tablet;
+    uint32_t _max_rows_per_segment = 0;
+    std::vector<std::unique_ptr<SegmentWriter>> _segment_writers;
+    size_t _current_writer_index = 0;
     std::vector<std::string> _files;
     int64_t _num_rows = 0;
     int64_t _data_size = 0;
