@@ -53,14 +53,12 @@ Status IndexedColumnReader::load() {
     RETURN_IF_ERROR(get_block_compression_codec(_meta.compression(), &_compress_codec));
     _validx_key_coder = get_key_coder(_type_info->type());
 
-    RandomAccessFileOptions file_opts{.skip_fill_local_cache = _skip_fill_local_cache};
-    ASSIGN_OR_RETURN(auto read_file, _fs->new_random_access_file(file_opts, _file_name));
     // read and parse ordinal index page when exists
     if (_meta.has_ordinal_index_meta()) {
         if (_meta.ordinal_index_meta().is_root_data_page()) {
             _sole_data_page = PagePointer(_meta.ordinal_index_meta().root_page());
         } else {
-            RETURN_IF_ERROR(load_index_page(read_file.get(), _meta.ordinal_index_meta().root_page(),
+            RETURN_IF_ERROR(load_index_page(_file, _meta.ordinal_index_meta().root_page(),
                                             &_ordinal_index_page_handle, &_ordinal_index_reader));
             _has_index_page = true;
         }
@@ -71,7 +69,7 @@ Status IndexedColumnReader::load() {
         if (_meta.value_index_meta().is_root_data_page()) {
             _sole_data_page = PagePointer(_meta.value_index_meta().root_page());
         } else {
-            RETURN_IF_ERROR(load_index_page(read_file.get(), _meta.value_index_meta().root_page(),
+            RETURN_IF_ERROR(load_index_page(_file, _meta.value_index_meta().root_page(),
                                             &_value_index_page_handle, &_value_index_reader));
             _has_index_page = true;
         }
@@ -108,11 +106,8 @@ Status IndexedColumnReader::read_page(RandomAccessFile* read_file, const PagePoi
 }
 
 Status IndexedColumnReader::new_iterator(std::unique_ptr<IndexedColumnIterator>* iter, const IndexReadOptions& opts) {
-    RandomAccessFileOptions file_opts{.skip_fill_local_cache = _skip_fill_local_cache};
-    ASSIGN_OR_RETURN(auto file, _fs->new_random_access_file(file_opts, _file_name));
-
     IndexedColumnIteratorOptions index_opts;
-    index_opts.read_file = std::move(file);
+    index_opts.read_file = _file;
     index_opts.stats = opts.stats;
     iter->reset(new IndexedColumnIterator(this, std::move(index_opts)));
     return Status::OK();
@@ -129,7 +124,7 @@ Status IndexedColumnIterator::_read_data_page(const PagePointer& pp) {
     PageHandle handle;
     Slice body;
     PageFooterPB footer;
-    RETURN_IF_ERROR(_reader->read_page(_opts.read_file.get(), pp, &handle, &body, &footer, _opts.stats));
+    RETURN_IF_ERROR(_reader->read_page(_opts.read_file, pp, &handle, &body, &footer, _opts.stats));
     // parse data page
     // note that page_index is not used in IndexedColumnIterator, so we pass 0
     return parse_page(&_data_page, std::move(handle), body, footer.data_page_footer(), _reader->encoding_info(), pp, 0);

@@ -58,7 +58,7 @@ class EncodingInfo;
 class IndexedColumnReader;
 
 struct IndexedColumnIteratorOptions {
-    std::unique_ptr<RandomAccessFile> read_file;
+    RandomAccessFile* read_file;
     OlapReaderStatistics* stats = nullptr;
 };
 
@@ -121,6 +121,7 @@ public:
     IndexedColumnReader(const IndexReadOptions& opts, IndexedColumnMetaPB meta)
             : _fs(opts.fs),
               _file_name(opts.file_name),
+              _file(opts.file),
               _meta(std::move(meta)),
               _use_page_cache(opts.use_page_cache),
               _kept_in_memory(opts.kept_in_memory),
@@ -152,6 +153,7 @@ private:
 
     FileSystem* _fs;
     std::string _file_name;
+    RandomAccessFile* _file;
     IndexedColumnMetaPB _meta;
 
     bool _use_page_cache = true;

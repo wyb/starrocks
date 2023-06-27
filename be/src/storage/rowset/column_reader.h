@@ -139,7 +139,7 @@ public:
     Status zone_map_filter(const std::vector<const ::starrocks::ColumnPredicate*>& p,
                            const ::starrocks::ColumnPredicate* del_predicate,
                            std::unordered_set<uint32_t>* del_partial_filtered_pages, SparseRange* row_ranges,
-                           bool skip_fill_local_cache);
+                           bool skip_fill_local_cache, RandomAccessFile* file);
 
     // segment-level zone map filter.
     // Return false to filter out this segment.
@@ -148,9 +148,12 @@ public:
 
     // prerequisite: at least one predicate in |predicates| support bloom filter.
     Status bloom_filter(const std::vector<const ::starrocks::ColumnPredicate*>& p, SparseRange* ranges,
-                        bool skip_fill_local_cache);
+                        bool skip_fill_local_cache, RandomAccessFile* file);
 
-    Status load_ordinal_index(bool skip_fill_local_cache);
+    Status load_ordinal_index(bool skip_fill_local_cache, RandomAccessFile* file);
+    Status load_zonemap_index(bool skip_fill_local_cache, RandomAccessFile* file);
+    Status load_bitmap_index(bool skip_fill_local_cache, RandomAccessFile* file);
+    Status load_bloom_filter_index(bool skip_fill_local_cache, RandomAccessFile* file);
 
     uint32_t num_rows() const { return _segment->num_rows(); }
 
@@ -171,10 +174,10 @@ private:
 
     Status _init(ColumnMetaPB* meta);
 
-    Status _load_zonemap_index(bool skip_fill_local_cache);
-    Status _load_ordinal_index(bool skip_fill_local_cache);
+    Status _load_ordinal_index(bool skip_fill_local_cache, RandomAccessFile* file);
+    Status _load_zonemap_index(bool skip_fill_local_cache, RandomAccessFile* file);
     Status _load_bitmap_index(const IndexReadOptions& options);
-    Status _load_bloom_filter_index(bool skip_fill_local_cache);
+    Status _load_bloom_filter_index(bool skip_fill_local_cache, RandomAccessFile* file);
 
     Status _parse_zone_map(const ZoneMapPB& zm, ZoneMapDetail* detail) const;
 

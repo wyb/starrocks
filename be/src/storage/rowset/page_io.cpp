@@ -168,6 +168,7 @@ Status PageIO::read_and_decompress_page(const PageReadOptions& opts, PageHandle*
     std::unique_ptr<char[]> page(new char[page_size + Column::APPEND_OVERFLOW_MAX_SIZE]);
     Slice page_slice(page.get(), page_size);
     {
+        LOG(INFO) << "xxx read page offset: " << opts.page_pointer.offset << ", size: " << page_slice.size;
         SCOPED_RAW_TIMER(&opts.stats->io_ns);
         if (opts.read_file->is_cache_hit()) {
             RETURN_IF_ERROR(opts.read_file->read_at_fully(opts.page_pointer.offset, page_slice.data, page_slice.size));

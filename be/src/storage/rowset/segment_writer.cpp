@@ -240,6 +240,7 @@ Status SegmentWriter::finalize_columns(uint64_t* index_size) {
     }
     _num_rows_written = 0;
 
+    // first write data of all _column_writers, then write index
     size_t num_columns = _tablet_schema->num_columns();
     for (size_t i = 0; i < _column_indexes.size(); ++i) {
         uint32_t column_index = _column_indexes[i];
@@ -252,13 +253,6 @@ Status SegmentWriter::finalize_columns(uint64_t* index_size) {
         RETURN_IF_ERROR(column_writer->finish());
         // write data
         RETURN_IF_ERROR(column_writer->write_data());
-        // write index
-        uint64_t index_offset = _wfile->size();
-        RETURN_IF_ERROR(column_writer->write_ordinal_index());
-        RETURN_IF_ERROR(column_writer->write_zone_map());
-        RETURN_IF_ERROR(column_writer->write_bitmap_index());
-        RETURN_IF_ERROR(column_writer->write_bloom_filter_index());
-        *index_size += _wfile->size() - index_offset;
 
         // global dict
         if (!column_writer->is_global_dict_valid()) {
@@ -266,10 +260,21 @@ Status SegmentWriter::finalize_columns(uint64_t* index_size) {
                                  _tablet_schema->columns()[column_index].name().size());
             _global_dict_columns_valid_info[col_name] = false;
         }
+    }
 
+    uint64_t index_offset = _wfile->size();
+    for (size_t i = 0; i < _column_indexes.size(); ++i) {
+        auto& column_writer = _column_writers[i];
+        // write index
+        RETURN_IF_ERROR(column_writer->write_ordinal_index());
+        RETURN_IF_ERROR(column_writer->write_zone_map());
+        RETURN_IF_ERROR(column_writer->write_bitmap_index());
+        RETURN_IF_ERROR(column_writer->write_bloom_filter_index());
         // reset to release memory
         column_writer.reset();
     }
+    *index_size += _wfile->size() - index_offset;
+
     _column_writers.clear();
     _column_indexes.clear();
 

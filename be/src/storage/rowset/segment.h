@@ -152,7 +152,7 @@ public:
 
     size_t num_columns() const { return _column_readers.size(); }
 
-    const ColumnReader* column(size_t i) const { return _column_readers[i].get(); }
+    ColumnReader* column(size_t i) const { return _column_readers[i].get(); }
 
     FileSystem* file_system() const { return _fs.get(); }
 

@@ -278,6 +278,7 @@ private:
     roaring::api::roaring_uint32_iterator_t _roaring_iter;
 
     std::unordered_map<ColumnId, std::unique_ptr<RandomAccessFile>> _column_files;
+    std::unique_ptr<RandomAccessFile> _index_file;
 
     SparseRange _scan_range;
     SparseRangeIterator _range_iter;
@@ -378,8 +379,48 @@ Status SegmentIterator::_init() {
     _selected_idx.resize(_reserve_chunk_size);
 
     StarRocksMetrics::instance()->segment_read_total.increment(1);
+    LOG(INFO) << "xxx segment init start";
 
     /// the calling order matters, do not change unless you know why.
+
+    RandomAccessFileOptions opts{.skip_fill_local_cache = _skip_fill_data_cache()};
+    ASSIGN_OR_RETURN(_index_file, _opts.fs->new_random_access_file(opts, _segment->file_name()));
+
+    std::set<ColumnId> columns;
+    _opts.delete_predicates.get_column_ids(&columns);
+    for (const auto& pair : _opts.predicates) {
+        columns.insert(pair.first);
+    }
+
+    for (const FieldPtr& f : _schema.fields()) {
+        const ColumnId cid = f->id();
+        auto* column_reader = _segment->column(cid);
+        if (column_reader == nullptr) {
+            continue;
+        }
+
+        LOG(INFO) << "xxxxxx load ordinal index start. cid: " << cid;
+        column_reader->load_ordinal_index(_skip_fill_data_cache(), _index_file.get());
+        LOG(INFO) << "xxxxxx load ordinal index finish. cid: " << cid;
+
+        if (columns.count(cid) > 0) {
+            LOG(INFO) << "xxxxxx load zonemap index start. cid: " << cid;
+            column_reader->load_zonemap_index(_skip_fill_data_cache(), _index_file.get());
+            LOG(INFO) << "xxxxxx load zonemap index finish. cid: " << cid;
+        }
+
+        for (const auto& pair : _opts.predicates) {
+            if (cid == pair.first) {
+                LOG(INFO) << "xxxxxx load bitmap index start. cid: " << cid;
+                column_reader->load_bitmap_index(_skip_fill_data_cache(), _index_file.get());
+                LOG(INFO) << "xxxxxx load bitmap index finish. cid: " << cid;
+                LOG(INFO) << "xxxxxx load bloom filter index start. cid: " << cid;
+                column_reader->load_bloom_filter_index(_skip_fill_data_cache(), _index_file.get());
+                LOG(INFO) << "xxxxxx load bloom filter index finish. cid: " << cid;
+                break;
+            }
+        }
+    }
 
     // init stage
     // The main task is to do some initialization,
@@ -397,11 +438,14 @@ Status SegmentIterator::_init() {
     RETURN_IF_ERROR(_get_row_ranges_by_bloom_filter());
     // rewrite stage
     // Rewriting predicates using segment dictionary codes
-    RETURN_IF_ERROR(_rewrite_predicates());
+    if (!_scan_range.empty()) {
+        RETURN_IF_ERROR(_rewrite_predicates());
+    }
     RETURN_IF_ERROR(_init_context());
     _init_column_predicates();
     _range_iter = _scan_range.new_iterator();
 
+    LOG(INFO) << "xxx segment init finish";
     return Status::OK();
 }
 
@@ -486,15 +530,19 @@ Status SegmentIterator::_init_column_iterator_by_cid(const ColumnId cid, const C
         ASSIGN_OR_RETURN(_column_iterators[cid], _segment->new_column_iterator(cid, access_path));
         ASSIGN_OR_RETURN(auto rfile, _opts.fs->new_random_access_file(opts, _segment->file_name()));
         iter_opts.read_file = rfile.get();
+        iter_opts.index_file = _index_file.get();
         _column_files[cid] = std::move(rfile);
     } else {
         // create delta column iterator
         _column_iterators[cid] = std::move(col_iter);
         ASSIGN_OR_RETURN(auto dcg_file, _opts.fs->new_random_access_file(dcg_filename));
         iter_opts.read_file = dcg_file.get();
+        iter_opts.index_file = _index_file.get();
         _column_files[cid] = std::move(dcg_file);
     }
+    LOG(INFO) << "xxx init column iterator start. cid: " << cid;
     RETURN_IF_ERROR(_column_iterators[cid]->init(iter_opts));
+    LOG(INFO) << "xxx init column iterator finish. cid: " << cid;
     return Status::OK();
 }
 
@@ -698,7 +746,9 @@ Status SegmentIterator::_get_row_ranges_by_zone_map() {
         auto iter = _del_predicates.find(cid);
         del_pred = iter != _del_predicates.end() ? &(iter->second) : nullptr;
         SparseRange r;
+        LOG(INFO) << "xxx zone map filter start. cid: " << cid;
         RETURN_IF_ERROR(_column_iterators[cid]->get_row_ranges_by_zone_map(query_preds, del_pred, &r));
+        LOG(INFO) << "xxx zone map filter finish. cid: " << cid;
         zm_range = zm_range.intersection(r);
     }
     StarRocksMetrics::instance()->segment_rows_read_by_zone_map.increment(zm_range.span_size());
@@ -1521,16 +1571,18 @@ Status SegmentIterator::_init_bitmap_index_iterators() {
                 col_index = cid;
             }
 
+            // TODO: file bug
             IndexReadOptions options;
-            options.fs = segment_ptr->file_system();
-            options.file_name = segment_ptr->file_name();
+            options.file = _index_file.get();
             options.use_page_cache =
                     config::enable_bitmap_index_memory_page_cache || !config::disable_storage_page_cache;
             options.kept_in_memory = config::enable_bitmap_index_memory_page_cache;
             options.skip_fill_local_cache = _skip_fill_data_cache();
             options.stats = _opts.stats;
 
+            LOG(INFO) << "xxx init bitmap index iterator start. cid: " << cid;
             RETURN_IF_ERROR(segment_ptr->new_bitmap_index_iterator(col_index, options, &_bitmap_index_iterators[cid]));
+            LOG(INFO) << "xxx init bitmap index iterator finish. cid: " << cid;
             _has_bitmap_index |= (_bitmap_index_iterators[cid] != nullptr);
         }
     }
@@ -1566,7 +1618,9 @@ Status SegmentIterator::_apply_bitmap_index() {
         bool has_is_null = false;
         for (const ColumnPredicate* pred : pred_list) {
             SparseRange r;
+            LOG(INFO) << "xxx seek bitmap dict start. cid: " << cid;
             Status st = pred->seek_bitmap_dictionary(bitmap_iter, &r);
+            LOG(INFO) << "xxx seek bitmap dict finish. cid: " << cid;
             if (st.ok()) {
                 selected &= r;
                 erased_preds.emplace_back(pred);
@@ -1604,6 +1658,7 @@ Status SegmentIterator::_apply_bitmap_index() {
     DCHECK_EQ(input_rows, _scan_range.span_size());
 
     for (size_t i = 0; i < bitmap_columns.size(); i++) {
+        LOG(INFO) << "xxx read bitmap start. cid: " << bitmap_columns[i];
         Roaring roaring;
         BitmapIndexIterator* bitmap_iter = _bitmap_index_iterators[bitmap_columns[i]];
         if (bitmap_iter->has_null_bitmap() && !has_is_null_predicate[i]) {
@@ -1613,6 +1668,7 @@ Status SegmentIterator::_apply_bitmap_index() {
         }
         RETURN_IF_ERROR(bitmap_iter->read_union_bitmap(bitmap_ranges[i], &roaring));
         row_bitmap &= roaring;
+        LOG(INFO) << "xxx read bitmap finish. cid: " << bitmap_columns[i];
     }
 
     DCHECK_LE(row_bitmap.cardinality(), _scan_range.span_size());

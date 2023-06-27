@@ -118,7 +118,9 @@ Status Segment::parse_segment_footer(RandomAccessFile* read_file, SegmentFooterP
     raw::stl_string_resize_uninitialized(&buff, footer_read_size);
     size_t read_pos = partial_rowset_footer ? partial_rowset_footer->position() : file_size - buff.size();
 
+    LOG(INFO) << "xxx read footer start. name: " << read_file->filename();
     RETURN_IF_ERROR(read_file->read_at_fully(read_pos, buff.data(), buff.size()));
+    LOG(INFO) << "xxx read footer finish. name: " << read_file->filename();
 
     const uint32_t footer_length = UNALIGNED_LOAD32(buff.data() + buff.size() - 12);
     const uint32_t checksum = UNALIGNED_LOAD32(buff.data() + buff.size() - 8);

@@ -164,6 +164,7 @@ Status SegmentMetaCollecter::_init_return_column_iterators() {
                 ColumnIteratorOptions iter_opts;
                 iter_opts.check_dict_encoding = true;
                 iter_opts.read_file = _read_file.get();
+                iter_opts.index_file = _read_file.get();
                 iter_opts.stats = &_stats;
                 RETURN_IF_ERROR(_column_iterators[cid]->init(iter_opts));
             }

@@ -310,8 +310,8 @@ Status ColumnReader::_parse_zone_map(const ZoneMapPB& zm, ZoneMapDetail* detail)
 
 // prerequisite: at least one predicate in |predicates| support bloom filter.
 Status ColumnReader::bloom_filter(const std::vector<const ColumnPredicate*>& predicates, SparseRange* row_ranges,
-                                  bool skip_fill_local_cache) {
-    RETURN_IF_ERROR(_load_bloom_filter_index(skip_fill_local_cache));
+                                  bool skip_fill_local_cache, RandomAccessFile* file) {
+    RETURN_IF_ERROR(_load_bloom_filter_index(skip_fill_local_cache, file));
     SparseRange bf_row_ranges;
     std::unique_ptr<BloomFilterIndexIterator> bf_iter;
     RETURN_IF_ERROR(_bloom_filter_index->new_iterator(&bf_iter));
@@ -342,16 +342,15 @@ Status ColumnReader::bloom_filter(const std::vector<const ColumnPredicate*>& pre
     return Status::OK();
 }
 
-Status ColumnReader::load_ordinal_index(bool skip_fill_local_cache) {
-    return _load_ordinal_index(skip_fill_local_cache);
+Status ColumnReader::load_ordinal_index(bool skip_fill_local_cache, RandomAccessFile* file) {
+    return _load_ordinal_index(skip_fill_local_cache, file);
 }
 
-Status ColumnReader::_load_ordinal_index(bool skip_fill_local_cache) {
+Status ColumnReader::_load_ordinal_index(bool skip_fill_local_cache, RandomAccessFile* file) {
     if (_ordinal_index == nullptr || _ordinal_index->loaded()) return Status::OK();
     SCOPED_THREAD_LOCAL_CHECK_MEM_LIMIT_SETTER(false);
     IndexReadOptions opts;
-    opts.fs = file_system();
-    opts.file_name = file_name();
+    opts.file = file;
     opts.use_page_cache = config::enable_ordinal_index_memory_page_cache || !config::disable_storage_page_cache;
     opts.kept_in_memory = config::enable_ordinal_index_memory_page_cache;
     opts.skip_fill_local_cache = skip_fill_local_cache;
@@ -365,12 +364,15 @@ Status ColumnReader::_load_ordinal_index(bool skip_fill_local_cache) {
     return Status::OK();
 }
 
-Status ColumnReader::_load_zonemap_index(bool skip_fill_local_cache) {
+Status ColumnReader::load_zonemap_index(bool skip_fill_local_cache, RandomAccessFile* file) {
+    return _load_zonemap_index(skip_fill_local_cache, file);
+}
+
+Status ColumnReader::_load_zonemap_index(bool skip_fill_local_cache, RandomAccessFile* file) {
     if (_zonemap_index == nullptr || _zonemap_index->loaded()) return Status::OK();
     SCOPED_THREAD_LOCAL_CHECK_MEM_LIMIT_SETTER(false);
     IndexReadOptions opts;
-    opts.fs = file_system();
-    opts.file_name = file_name();
+    opts.file = file;
     opts.use_page_cache = config::enable_zonemap_index_memory_page_cache || !config::disable_storage_page_cache;
     opts.kept_in_memory = config::enable_zonemap_index_memory_page_cache;
     opts.skip_fill_local_cache = skip_fill_local_cache;
@@ -382,6 +384,15 @@ Status ColumnReader::_load_zonemap_index(bool skip_fill_local_cache) {
         _zonemap_index_meta.reset();
     }
     return Status::OK();
+}
+
+Status ColumnReader::load_bitmap_index(bool skip_fill_local_cache, RandomAccessFile* file) {
+    IndexReadOptions opts;
+    opts.file = file;
+    opts.use_page_cache = !config::disable_storage_page_cache;
+    opts.kept_in_memory = keep_in_memory();
+    opts.skip_fill_local_cache = skip_fill_local_cache;
+    return _load_bitmap_index(opts);
 }
 
 Status ColumnReader::_load_bitmap_index(const IndexReadOptions& options) {
@@ -397,12 +408,15 @@ Status ColumnReader::_load_bitmap_index(const IndexReadOptions& options) {
     return Status::OK();
 }
 
-Status ColumnReader::_load_bloom_filter_index(bool skip_fill_local_cache) {
+Status ColumnReader::load_bloom_filter_index(bool skip_fill_local_cache, RandomAccessFile* file) {
+    return _load_bloom_filter_index(skip_fill_local_cache, file);
+}
+
+Status ColumnReader::_load_bloom_filter_index(bool skip_fill_local_cache, RandomAccessFile* file) {
     if (_bloom_filter_index == nullptr || _bloom_filter_index->loaded()) return Status::OK();
     SCOPED_THREAD_LOCAL_CHECK_MEM_LIMIT_SETTER(false);
     IndexReadOptions opts;
-    opts.fs = file_system();
-    opts.file_name = file_name();
+    opts.file = file;
     opts.use_page_cache = !config::disable_storage_page_cache;
     opts.kept_in_memory = keep_in_memory();
     opts.skip_fill_local_cache = skip_fill_local_cache;
@@ -435,8 +449,8 @@ Status ColumnReader::seek_at_or_before(ordinal_t ordinal, OrdinalPageIndexIterat
 Status ColumnReader::zone_map_filter(const std::vector<const ColumnPredicate*>& predicates,
                                      const ColumnPredicate* del_predicate,
                                      std::unordered_set<uint32_t>* del_partial_filtered_pages, SparseRange* row_ranges,
-                                     bool skip_fill_local_cache) {
-    RETURN_IF_ERROR(_load_zonemap_index(skip_fill_local_cache));
+                                     bool skip_fill_local_cache, RandomAccessFile* file) {
+    RETURN_IF_ERROR(load_zonemap_index(skip_fill_local_cache, file));
     std::vector<uint32_t> page_indexes;
     RETURN_IF_ERROR(_zone_map_filter(predicates, del_predicate, del_partial_filtered_pages, &page_indexes));
     RETURN_IF_ERROR(_calculate_row_ranges(page_indexes, row_ranges));

@@ -48,7 +48,9 @@ ScalarColumnIterator::~ScalarColumnIterator() = default;
 
 Status ScalarColumnIterator::init(const ColumnIteratorOptions& opts) {
     _opts = opts;
-    RETURN_IF_ERROR(_reader->load_ordinal_index(_skip_fill_local_cache()));
+    LOG(INFO) << "xxx load ordinal index start";
+    RETURN_IF_ERROR(_reader->load_ordinal_index(_skip_fill_local_cache(), _opts.index_file));
+    LOG(INFO) << "xxx load ordinal index finish";
     _opts.stats->total_columns_data_page_count += _reader->num_data_pages();
 
     if (_reader->encoding_info()->encoding() != DICT_ENCODING) {
@@ -68,7 +70,9 @@ Status ScalarColumnIterator::init(const ColumnIteratorOptions& opts) {
             _all_dict_encoded = _reader->all_dict_encoded();
             // if _all_dict_encoded is true, load dictionary page into memory for `dict_lookup`.
             RETURN_IF(!_all_dict_encoded, Status::OK());
-            RETURN_IF_ERROR(_load_dict_page());
+            LOG(INFO) << "xxx load dict start";
+            //RETURN_IF_ERROR(_load_dict_page());
+            LOG(INFO) << "xxx load dict finish";
         } else if (_reader->num_rows() > 0) {
             // old version segment file dost not have `all_dict_encoded`, in order to check
             // whether all data pages are using dict encoding, must load the last data page
@@ -302,7 +306,7 @@ Status ScalarColumnIterator::get_row_ranges_by_zone_map(const std::vector<const 
     DCHECK(row_ranges->empty());
     if (_reader->has_zone_map()) {
         RETURN_IF_ERROR(_reader->zone_map_filter(predicates, del_predicate, &_delete_partial_satisfied_pages,
-                                                 row_ranges, _skip_fill_local_cache()));
+                                                 row_ranges, _skip_fill_local_cache(), _opts.index_file));
     } else {
         row_ranges->add({0, static_cast<rowid_t>(_reader->num_rows())});
     }
@@ -317,12 +321,14 @@ Status ScalarColumnIterator::get_row_ranges_by_bloom_filter(const std::vector<co
         support = support | pred->support_bloom_filter();
     }
     RETURN_IF(!support, Status::OK());
-    RETURN_IF_ERROR(_reader->bloom_filter(predicates, row_ranges, _skip_fill_local_cache()));
+    RETURN_IF_ERROR(_reader->bloom_filter(predicates, row_ranges, _skip_fill_local_cache(), _opts.index_file));
     return Status::OK();
 }
 
 int ScalarColumnIterator::dict_lookup(const Slice& word) {
     DCHECK(all_page_dict_encoded());
+    auto st = _load_dict_page();
+    if (!st.ok()) return -1;
     return (this->*_dict_lookup_func)(word);
 }
 

@@ -51,6 +51,7 @@ class RandomAccessFile;
 
 struct ColumnIteratorOptions {
     RandomAccessFile* read_file = nullptr;
+    RandomAccessFile* index_file = nullptr;
     // reader statistics
     OlapReaderStatistics* stats = nullptr;
     bool use_page_cache = false;
