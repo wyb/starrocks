@@ -18,7 +18,10 @@
 #include <memory>
 #include <stack>
 #include <unordered_map>
+#include <bthread/condition_variable.h>
+#include <bthread/mutex.h>
 
+#include "agent/agent_server.h"
 #include "column/binary_column.h"
 #include "column/chunk.h"
 #include "column/column_helper.h"
@@ -55,9 +58,12 @@
 #include "storage/storage_engine.h"
 #include "storage/types.h"
 #include "storage/update_manager.h"
+#include "util/countdown_latch.h"
 #include "util/starrocks_metrics.h"
 
 namespace starrocks {
+
+using BThreadCountDownLatch = GenericCountDownLatch<bthread::Mutex, bthread::ConditionVariable>;
 
 constexpr static const LogicalType kDictCodeType = TYPE_INT;
 
@@ -129,9 +135,40 @@ private:
 
         Status read_columns(Chunk* chunk, const SparseRange<>& range) {
             bool may_has_del_row = chunk->delete_state() != DEL_NOT_SATISFIED;
+
+            bthread::Mutex mtx;
+            auto thread_pool = ExecEnv::GetInstance()->agent_server()->get_thread_pool(TTaskType::CREATE);
+            auto latch = BThreadCountDownLatch(_column_iterators.size());
+            Status status;
+            auto& column_iterators = _column_iterators;
+            LOG(INFO) << "xxx ------ next batch ------";
+            for (size_t i = 0; i < _column_iterators.size(); i++) {
+                auto stx = thread_pool->submit_func([i, &range, &mtx, &column_iterators, &chunk, &status, &latch]() {
+                    const ColumnPtr& col = chunk->get_column_by_index(i);
+                    LOG(INFO) << "xxx column: " << i << " next batch start";
+                    auto st = column_iterators[i]->next_batch(range, col.get());
+                    LOG(INFO) << "xxx column: " << i << " next batch finish";
+                    if (!st.ok()) {
+                        std::lock_guard l(mtx);
+                        status.update(st);
+                    }
+                    latch.count_down();
+                });
+                if (!stx.ok()) {
+                    LOG(WARNING) << "Fail to submit next batch task: " << stx;
+                    latch.count_down();
+                    std::lock_guard l(mtx);
+                    status.update(stx);
+                }
+            }
+
+            latch.wait();
+            if (!status.ok()) {
+                return status;
+            }
+
             for (size_t i = 0; i < _column_iterators.size(); i++) {
                 const ColumnPtr& col = chunk->get_column_by_index(i);
-                RETURN_IF_ERROR(_column_iterators[i]->next_batch(range, col.get()));
                 may_has_del_row |= (col->delete_state() != DEL_NOT_SATISFIED);
             }
             chunk->set_delete_state(may_has_del_row ? DEL_PARTIAL_SATISFIED : DEL_NOT_SATISFIED);
@@ -352,6 +389,7 @@ SegmentIterator::SegmentIterator(std::shared_ptr<Segment> segment, Schema schema
 }
 
 Status SegmentIterator::_init() {
+    LOG(INFO) << "xxx segment iterator init start";
     SCOPED_RAW_TIMER(&_opts.stats->segment_init_ns);
     if (_opts.is_cancelled != nullptr && _opts.is_cancelled->load(std::memory_order_acquire)) {
         return Status::Cancelled("Cancelled");
@@ -401,6 +439,7 @@ Status SegmentIterator::_init() {
     RETURN_IF_ERROR(_init_context());
     _init_column_predicates();
     _range_iter = _scan_range.new_iterator();
+    LOG(INFO) << "xxx segment iterator init finish";
 
     return Status::OK();
 }
