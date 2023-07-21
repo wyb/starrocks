@@ -50,8 +50,8 @@ Status ScalarColumnIterator::init(const ColumnIteratorOptions& opts) {
     _opts = opts;
 
     IndexReadOptions index_opts;
-    index_opts.use_page_cache = config::enable_ordinal_index_memory_page_cache || !config::disable_storage_page_cache;
-    index_opts.kept_in_memory = config::enable_ordinal_index_memory_page_cache;
+    index_opts.use_page_cache = !config::disable_storage_page_cache;
+    index_opts.kept_in_memory = false;
     index_opts.skip_fill_data_cache = _skip_fill_data_cache();
     index_opts.read_file = _opts.read_file;
     index_opts.stats = _opts.stats;
@@ -75,7 +75,7 @@ Status ScalarColumnIterator::init(const ColumnIteratorOptions& opts) {
             _all_dict_encoded = _reader->all_dict_encoded();
             // if _all_dict_encoded is true, load dictionary page into memory for `dict_lookup`.
             RETURN_IF(!_all_dict_encoded, Status::OK());
-            RETURN_IF_ERROR(_load_dict_page());
+            // RETURN_IF_ERROR(_load_dict_page());
         } else if (_reader->num_rows() > 0) {
             // old version segment file dost not have `all_dict_encoded`, in order to check
             // whether all data pages are using dict encoding, must load the last data page
@@ -309,8 +309,8 @@ Status ScalarColumnIterator::get_row_ranges_by_zone_map(const std::vector<const 
     DCHECK(row_ranges->empty());
     if (_reader->has_zone_map()) {
         IndexReadOptions opts;
-        opts.use_page_cache = config::enable_zonemap_index_memory_page_cache || !config::disable_storage_page_cache;
-        opts.kept_in_memory = config::enable_zonemap_index_memory_page_cache;
+        opts.use_page_cache = !config::disable_storage_page_cache;
+        opts.kept_in_memory = false;
         opts.skip_fill_data_cache = _skip_fill_data_cache();
         opts.read_file = _opts.read_file;
         opts.stats = _opts.stats;
@@ -333,7 +333,7 @@ Status ScalarColumnIterator::get_row_ranges_by_bloom_filter(const std::vector<co
 
     IndexReadOptions opts;
     opts.use_page_cache = !config::disable_storage_page_cache;
-    opts.kept_in_memory = !config::disable_storage_page_cache;
+    opts.kept_in_memory = false;
     opts.skip_fill_data_cache = _skip_fill_data_cache();
     opts.read_file = _opts.read_file;
     opts.stats = _opts.stats;
@@ -343,6 +343,8 @@ Status ScalarColumnIterator::get_row_ranges_by_bloom_filter(const std::vector<co
 
 int ScalarColumnIterator::dict_lookup(const Slice& word) {
     DCHECK(all_page_dict_encoded());
+    auto st = _load_dict_page();
+    if (!st.ok()) return -1;
     return (this->*_dict_lookup_func)(word);
 }
 

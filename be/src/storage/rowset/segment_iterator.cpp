@@ -403,7 +403,9 @@ Status SegmentIterator::_init() {
     RETURN_IF_ERROR(_get_row_ranges_by_bloom_filter());
     // rewrite stage
     // Rewriting predicates using segment dictionary codes
-    RETURN_IF_ERROR(_rewrite_predicates());
+    if (!_scan_range.empty()) {
+        RETURN_IF_ERROR(_rewrite_predicates());
+    }
     RETURN_IF_ERROR(_init_context());
     _init_column_predicates();
     _range_iter = _scan_range.new_iterator();

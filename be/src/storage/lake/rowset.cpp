@@ -14,6 +14,10 @@
 
 #include "storage/lake/rowset.h"
 
+#include <bthread/condition_variable.h>
+#include <bthread/mutex.h>
+
+#include "agent/agent_server.h"
 #include "storage/chunk_helper.h"
 #include "storage/chunk_iterator.h"
 #include "storage/delete_predicates.h"
@@ -24,8 +28,11 @@
 #include "storage/rowset/segment.h"
 #include "storage/rowset/segment_options.h"
 #include "storage/union_iterator.h"
+#include "util/countdown_latch.h"
 
 namespace starrocks::lake {
+
+using BThreadCountDownLatch = GenericCountDownLatch<bthread::Mutex, bthread::ConditionVariable>;
 
 Rowset::Rowset(Tablet* tablet, RowsetMetadataPtr rowset_metadata, int index)
         : _tablet(tablet), _rowset_metadata(std::move(rowset_metadata)), _index(index) {}
@@ -201,19 +208,45 @@ StatusOr<std::vector<SegmentPtr>> Rowset::segments(bool fill_cache) {
 }
 
 Status Rowset::load_segments(std::vector<SegmentPtr>* segments, bool fill_cache) {
-    size_t footer_size_hint = 16 * 1024;
     uint32_t seg_id = 0;
     bool ignore_lost_segment = config::experimental_lake_ignore_lost_segment;
     segments->reserve(_rowset_metadata->segments().size());
+    bthread::Mutex mtx;
+    std::map<std::string_view, SegmentPtr> id_segments;
+    auto thread_pool = ExecEnv::GetInstance()->agent_server()->get_thread_pool(TTaskType::CREATE);
+    auto latch = BThreadCountDownLatch(_rowset_metadata->segments().size());
+    Status status;
     for (const auto& seg_name : _rowset_metadata->segments()) {
-        auto segment_or = _tablet->load_segment(seg_name, seg_id++, &footer_size_hint, fill_cache);
-        if (segment_or.ok()) {
-            segments->emplace_back(std::move(segment_or.value()));
-        } else if (segment_or.status().is_not_found() && ignore_lost_segment) {
-            LOG(WARNING) << "Ignored lost segment " << seg_name;
-            continue;
-        } else {
-            return segment_or.status();
+        auto st = thread_pool->submit_func([&]() {
+            size_t footer_size_hint = 16 * 1024;
+            auto segment_or = _tablet->load_segment(seg_name, seg_id++, &footer_size_hint, fill_cache);
+            if (segment_or.ok()) {
+                std::lock_guard l(mtx);
+                id_segments[seg_name] = std::move(segment_or.value());
+            } else if (segment_or.status().is_not_found() && ignore_lost_segment) {
+                LOG(WARNING) << "Ignored lost segment " << seg_name;
+            } else {
+                std::lock_guard l(mtx);
+                status.update(segment_or.status());
+            }
+            latch.count_down();
+        });
+        if (!st.ok()) {
+            LOG(WARNING) << "Fail to load segment task: " << st;
+            std::lock_guard l(mtx);
+            status.update(st);
+            latch.count_down();
+        }
+    }
+    latch.wait();
+
+    if (!status.ok()) {
+        return status;
+    }
+
+    for (const auto& seg_name : _rowset_metadata->segments()) {
+        if (id_segments.count(seg_name) > 0) {
+            segments->emplace_back(std::move(id_segments[seg_name]));
         }
     }
     return Status::OK();
