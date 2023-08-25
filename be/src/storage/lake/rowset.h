@@ -19,13 +19,14 @@
 #include "storage/lake/tablet.h"
 #include "storage/lake/types_fwd.h"
 #include "storage/olap_common.h"
+#include "storage/rowset/base_rowset.h"
 
 namespace starrocks::lake {
 class MetaFileBuilder;
 
 static const int kInvalidRowsetIndex = -1;
 
-class Rowset {
+class Rowset : public BaseRowset {
 public:
     explicit Rowset(Tablet tablet, RowsetMetadataPtr rowset_metadata, int index);
 
@@ -56,19 +57,23 @@ public:
     [[nodiscard]] StatusOr<std::vector<ChunkIteratorPtr>> get_each_segment_iterator_with_delvec(
             const Schema& schema, int64_t version, const MetaFileBuilder* builder, OlapReaderStatistics* stats);
 
-    [[nodiscard]] bool is_overlapped() const { return metadata().overlapped(); }
+    [[nodiscard]] bool is_overlapped() const override { return metadata().overlapped(); }
 
     [[nodiscard]] int64_t num_segments() const { return metadata().segments_size(); }
 
-    [[nodiscard]] int64_t num_rows() const { return metadata().num_rows(); }
+    [[nodiscard]] int64_t num_rows() const override { return metadata().num_rows(); }
 
     [[nodiscard]] int64_t data_size() const { return metadata().data_size(); }
 
     [[nodiscard]] uint32_t id() const { return metadata().id(); }
 
+    [[nodiscard]] RowsetId rowset_id() const override;
+
     [[nodiscard]] int index() const { return _index; }
 
     [[nodiscard]] const RowsetMetadata& metadata() const { return *_rowset_metadata; }
+
+    [[nodiscard]] std::vector<SegmentSharedPtr> get_segments() override;
 
     [[nodiscard]] StatusOr<std::vector<SegmentPtr>> segments(bool fill_cache);
 
@@ -85,6 +90,8 @@ private:
     Tablet _tablet;
     RowsetMetadataPtr _rowset_metadata;
     int _index{kInvalidRowsetIndex};
+
+    std::vector<SegmentSharedPtr> _segments;
 };
 
 } // namespace starrocks::lake

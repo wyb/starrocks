@@ -87,6 +87,7 @@ private:
     static Status to_seek_tuple(const TabletSchema& tablet_schema, const OlapTuple& input, SeekTuple* tuple,
                                 MemPool* mempool);
 
+public:
     static Status parse_seek_range(const TabletSchema& tablet_schema,
                                    TabletReaderParams::RangeStartOperation range_start_op,
                                    TabletReaderParams::RangeEndOperation range_end_op,
@@ -94,6 +95,7 @@ private:
                                    const std::vector<OlapTuple>& range_end_key, std::vector<SeekRange>* ranges,
                                    MemPool* mempool);
 
+private:
     Tablet _tablet;
     int64_t _version;
     std::shared_ptr<const TabletMetadataPB> _tablet_metadata;

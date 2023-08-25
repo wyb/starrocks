@@ -35,8 +35,6 @@ Rowset::Rowset(Tablet tablet, RowsetMetadataPtr rowset_metadata)
 
 Rowset::~Rowset() = default;
 
-// TODO: support
-//  1. rowid range and short key range
 StatusOr<std::vector<ChunkIteratorPtr>> Rowset::read(const Schema& schema, const RowsetReadOptions& options) {
     SegmentReadOptions seg_options;
     ASSIGN_OR_RETURN(seg_options.fs, FileSystem::CreateSharedFromString(_tablet.root_location()));
@@ -63,6 +61,7 @@ StatusOr<std::vector<ChunkIteratorPtr>> Rowset::read(const Schema& schema, const
     if (options.delete_predicates != nullptr) {
         seg_options.delete_predicates = options.delete_predicates->get_predicates(_index);
     }
+    seg_options.short_key_ranges = options.short_key_ranges;
 
     std::unique_ptr<Schema> segment_schema_guard;
     auto* segment_schema = const_cast<Schema*>(&schema);
@@ -94,6 +93,13 @@ StatusOr<std::vector<ChunkIteratorPtr>> Rowset::read(const Schema& schema, const
     for (auto& seg_ptr : segments) {
         if (seg_ptr->num_rows() == 0) {
             continue;
+        }
+
+        if (options.rowid_range_option != nullptr) {
+            seg_options.rowid_range_option = options.rowid_range_option->get_segment_rowid_range(this, seg_ptr.get());
+            if (seg_options.rowid_range_option == nullptr) {
+                continue;
+            }
         }
 
         auto res = seg_ptr->new_iterator(*segment_schema, seg_options);
@@ -186,6 +192,25 @@ StatusOr<std::vector<ChunkIteratorPtr>> Rowset::get_each_segment_iterator_with_d
         seg_iterators.push_back(std::move(res).value());
     }
     return seg_iterators;
+}
+
+RowsetId Rowset::rowset_id() const {
+    RowsetId rowset_id;
+    rowset_id.init(id());
+    return rowset_id;
+}
+
+std::vector<SegmentSharedPtr> Rowset::get_segments() {
+    if (!_segments.empty()) {
+        return _segments;
+    }
+
+    auto segments_or = segments(false, true);
+    if (!segments_or.ok()) {
+        return std::vector<SegmentSharedPtr>();
+    }
+    _segments = std::move(segments_or.value());
+    return _segments;
 }
 
 StatusOr<std::vector<SegmentPtr>> Rowset::segments(bool fill_cache) {

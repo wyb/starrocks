@@ -181,7 +181,9 @@ set(EXEC_FILES
     pipeline/scan/olap_scan_operator.cpp
     pipeline/scan/olap_scan_prepare_operator.cpp
     pipeline/scan/olap_scan_context.cpp
+    pipeline/scan/connector_scan_context.cpp
     pipeline/scan/connector_scan_operator.cpp
+    pipeline/scan/connector_scan_prepare_operator.cpp
     stream/scan/stream_scan_operator.cpp
     pipeline/scan/meta_chunk_source.cpp
     pipeline/scan/meta_scan_operator.cpp

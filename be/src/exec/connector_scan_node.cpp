@@ -18,8 +18,10 @@
 #include <memory>
 
 #include "common/config.h"
+#include "exec/pipeline/noop_sink_operator.h"
 #include "exec/pipeline/scan/chunk_buffer_limiter.h"
 #include "exec/pipeline/scan/connector_scan_operator.h"
+#include "exec/pipeline/scan/connector_scan_prepare_operator.h"
 #include "exec/stream/scan/stream_scan_operator.h"
 #include "runtime/current_thread.h"
 #include "runtime/exec_env.h"
@@ -172,30 +174,54 @@ int ConnectorScanNode::_estimated_max_concurrent_chunks() const {
 }
 
 pipeline::OpFactories ConnectorScanNode::decompose_to_pipeline(pipeline::PipelineBuilderContext* context) {
-    size_t dop = context->dop_of_source_operator(id());
-    std::shared_ptr<pipeline::ConnectorScanOperatorFactory> scan_op = nullptr;
-    bool stream_data_source = _data_source_provider->stream_data_source();
-    bool is_stream_pipeline = context->is_stream_pipeline();
-
     // port from olap scan node. to control chunk buffer usage, we can control memory consumption to avoid OOM.
+    auto* morsel_queue_factory = context->morsel_queue_factory_of_source_operator(id());
+    size_t dop = morsel_queue_factory->size();
     size_t max_buffer_capacity = pipeline::ScanOperator::max_buffer_capacity() * dop;
     size_t default_buffer_capacity = std::min<size_t>(max_buffer_capacity, _estimated_max_concurrent_chunks());
-
     pipeline::ChunkBufferLimiterPtr buffer_limiter = std::make_unique<pipeline::DynamicChunkBufferLimiter>(
             max_buffer_capacity, default_buffer_capacity, int64_t(_mem_limit * kChunkBufferMemRatio),
             runtime_state()->chunk_size());
-    scan_op = !stream_data_source
-                      ? std::make_shared<pipeline::ConnectorScanOperatorFactory>(
-                                context->next_operator_id(), this, runtime_state(), dop, std::move(buffer_limiter))
-                      : std::make_shared<pipeline::StreamScanOperatorFactory>(
-                                context->next_operator_id(), this, runtime_state(), dop, std::move(buffer_limiter),
-                                is_stream_pipeline);
 
-    scan_op->set_estimated_mem_usage_per_chunk_source(_estimated_mem_usage_per_chunk_source);
-    scan_op->set_scan_mem_limit(_mem_limit);
+    std::shared_ptr<pipeline::ConnectorScanOperatorFactory> scan_op = nullptr;
+    if (_data_source_provider->stream_data_source()) {
+        auto&& rc_rf_probe_collector = std::make_shared<RcRfProbeCollector>(
+                1, std::move(this->runtime_filter_collector()));
 
-    auto&& rc_rf_probe_collector = std::make_shared<RcRfProbeCollector>(1, std::move(this->runtime_filter_collector()));
-    this->init_runtime_filter_for_operator(scan_op.get(), context, rc_rf_probe_collector);
+        scan_op = std::make_shared<pipeline::StreamScanOperatorFactory>(
+                context->next_operator_id(), this, runtime_state(), dop, std::move(buffer_limiter),
+                context->is_stream_pipeline());
+        scan_op->set_estimated_mem_usage_per_chunk_source(_estimated_mem_usage_per_chunk_source);
+        scan_op->set_scan_mem_limit(_mem_limit);
+        this->init_runtime_filter_for_operator(scan_op.get(), context, rc_rf_probe_collector);
+    } else {
+        bool shared_morsel_queue = morsel_queue_factory->is_shared();
+        auto scan_ctx_factory = std::make_shared<pipeline::ConnectorScanContextFactory>(
+                this, dop, shared_morsel_queue, _enable_shared_scan);
+
+        auto&& rc_rf_probe_collector = std::make_shared<RcRfProbeCollector>(
+                2, std::move(this->runtime_filter_collector()));
+
+        // scan prepare op
+        auto scan_prepare_op = std::make_shared<pipeline::ConnectorScanPrepareOperatorFactory>(
+                context->next_operator_id(), id(), this, scan_ctx_factory);
+        scan_prepare_op->set_degree_of_parallelism(shared_morsel_queue ? 1 : dop);
+        this->init_runtime_filter_for_operator(scan_prepare_op.get(), context, rc_rf_probe_collector);
+
+        auto scan_prepare_pipeline = pipeline::OpFactories{
+                std::move(scan_prepare_op),
+                std::make_shared<pipeline::NoopSinkOperatorFactory>(context->next_operator_id(), id()),
+        };
+        context->add_pipeline(scan_prepare_pipeline);
+
+        // scan op
+        scan_op = std::make_shared<pipeline::ConnectorScanOperatorFactory>(
+                context->next_operator_id(), this, runtime_state(), dop, std::move(buffer_limiter),
+                std::move(scan_ctx_factory));
+        scan_op->set_estimated_mem_usage_per_chunk_source(_estimated_mem_usage_per_chunk_source);
+        scan_op->set_scan_mem_limit(_mem_limit);
+        this->init_runtime_filter_for_operator(scan_op.get(), context, rc_rf_probe_collector);
+    }
 
     auto operators = pipeline::decompose_scan_node_to_pipeline(scan_op, this, context);
 
@@ -204,6 +230,16 @@ pipeline::OpFactories ConnectorScanNode::decompose_to_pipeline(pipeline::Pipelin
                 context->fragment_context()->runtime_state(), id(), operators, context->degree_of_parallelism());
     }
     return operators;
+}
+
+StatusOr<pipeline::MorselQueuePtr> ConnectorScanNode::convert_scan_range_to_morsel_queue(
+        const std::vector<TScanRangeParams>& scan_ranges, int node_id, int32_t pipeline_dop,
+        bool enable_tablet_internal_parallel, TTabletInternalParallelMode::type tablet_internal_parallel_mode,
+        size_t num_total_scan_ranges) {
+    return _data_source_provider->convert_scan_range_to_morsel_queue(scan_ranges, node_id, pipeline_dop,
+                                                                     enable_tablet_internal_parallel,
+                                                                     tablet_internal_parallel_mode,
+                                                                     num_total_scan_ranges);
 }
 
 // ==============================================================
@@ -256,7 +292,7 @@ Status ConnectorScanNode::_create_and_init_scanner(RuntimeState* state, TScanRan
     if (scan_range.__isset.broker_scan_range) {
         scan_range.broker_scan_range.params.__set_non_blocking_read(false);
     }
-    connector::DataSourcePtr data_source = _data_source_provider->create_data_source(scan_range);
+    connector::DataSourcePtr data_source = _data_source_provider->create_data_source(scan_range, nullptr, nullptr);
     data_source->set_predicates(_conjunct_ctxs);
     data_source->set_runtime_filters(&_runtime_filter_collector);
     data_source->set_read_limit(_limit);

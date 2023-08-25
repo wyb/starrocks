@@ -20,7 +20,7 @@ namespace starrocks::pipeline {
 
 StreamScanOperatorFactory::StreamScanOperatorFactory(int32_t id, ScanNode* scan_node, RuntimeState* state, size_t dop,
                                                      ChunkBufferLimiterPtr buffer_limiter, bool is_stream_pipeline)
-        : ConnectorScanOperatorFactory(id, scan_node, state, dop, std::move(buffer_limiter)),
+        : ConnectorScanOperatorFactory(id, scan_node, state, dop, std::move(buffer_limiter), nullptr),
           _is_stream_pipeline(is_stream_pipeline) {}
 
 OperatorPtr StreamScanOperatorFactory::do_create(int32_t dop, int32_t driver_sequence) {
@@ -29,7 +29,7 @@ OperatorPtr StreamScanOperatorFactory::do_create(int32_t dop, int32_t driver_seq
 
 StreamScanOperator::StreamScanOperator(OperatorFactory* factory, int32_t id, int32_t driver_sequence, int32_t dop,
                                        ScanNode* scan_node, bool is_stream_pipeline)
-        : ConnectorScanOperator(factory, id, driver_sequence, dop, scan_node),
+        : ConnectorScanOperator(factory, id, driver_sequence, dop, scan_node, nullptr),
           _is_stream_pipeline(is_stream_pipeline) {}
 
 StreamScanOperator::~StreamScanOperator() {
@@ -335,7 +335,7 @@ void StreamScanOperator::_close_chunk_source_unlocked(RuntimeState* state, int c
 
 StreamChunkSource::StreamChunkSource(ScanOperator* op, RuntimeProfile* runtime_profile, MorselPtr&& morsel,
                                      ConnectorScanNode* scan_node, BalancedChunkBuffer& chunk_buffer)
-        : ConnectorChunkSource(op, runtime_profile, std::move(morsel), scan_node, chunk_buffer) {}
+        : ConnectorChunkSource(op, runtime_profile, std::move(morsel), scan_node, chunk_buffer, nullptr) {}
 
 Status StreamChunkSource::prepare(RuntimeState* state) {
     RETURN_IF_ERROR(ConnectorChunkSource::prepare(state));

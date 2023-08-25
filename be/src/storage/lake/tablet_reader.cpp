@@ -117,8 +117,6 @@ Status TabletReader::do_get_next(Chunk* chunk, std::vector<RowSourceMask>* sourc
     return Status::OK();
 }
 
-// TODO: support
-//  1. rowid range and short key range
 Status TabletReader::get_segment_iterators(const TabletReaderParams& params, std::vector<ChunkIteratorPtr>* iters) {
     RowsetReadOptions rs_opts;
     KeysType keys_type = _tablet_schema->keys_type();
@@ -147,9 +145,15 @@ Status TabletReader::get_segment_iterators(const TabletReaderParams& params, std
         rs_opts.is_primary_keys = true;
         rs_opts.version = _version;
     }
+    rs_opts.rowid_range_option = params.rowid_range_option;
+    rs_opts.short_key_ranges = params.short_key_ranges;
 
     SCOPED_RAW_TIMER(&_stats.create_segment_iter_ns);
     for (auto& rowset : _rowsets) {
+        if (params.rowid_range_option != nullptr && !params.rowid_range_option->match_rowset(rowset.get())) {
+            continue;
+        }
+
         ASSIGN_OR_RETURN(auto seg_iters, enhance_error_prompt(rowset->read(schema(), rs_opts)));
         iters->insert(iters->end(), seg_iters.begin(), seg_iters.end());
     }

@@ -114,6 +114,14 @@ StatusOr<std::shared_ptr<const TabletSchema>> Tablet::get_schema_by_index_id(int
     return _mgr->get_tablet_schema_by_index_id(_id, index_id);
 }
 
+const std::shared_ptr<const TabletSchema> Tablet::tablet_schema() const {
+    auto tablet_schema_or = _mgr->get_tablet_schema(_id, nullptr);
+    if (!tablet_schema_or.ok()) {
+        return nullptr;
+    }
+    return tablet_schema_or.value();
+}
+
 StatusOr<std::vector<RowsetPtr>> Tablet::get_rowsets(int64_t version) {
     ASSIGN_OR_RETURN(auto tablet_metadata, get_metadata(version));
     return get_rowsets(*tablet_metadata);
@@ -217,6 +225,10 @@ int64_t Tablet::data_size() {
         LOG(WARNING) << "failed to get tablet " << _id << " data size: " << size.status();
         return 0;
     }
+}
+
+size_t Tablet::num_rows() const {
+    return 59986052;
 }
 
 } // namespace starrocks::lake

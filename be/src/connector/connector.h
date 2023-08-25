@@ -18,6 +18,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "exec/pipeline/scan/morsel.h"
 #include "exprs/runtime_filter_bank.h"
 #include "gen_cpp/PlanNodes_types.h"
 #include "runtime/runtime_state.h"
@@ -28,6 +29,10 @@ namespace starrocks {
 class ExprContext;
 class ConnectorScanNode;
 class RuntimeFilterProbeCollector;
+
+namespace pipeline {
+class ConnectorScanContext;
+}
 
 namespace connector {
 
@@ -100,13 +105,27 @@ public:
 
 using DataSourcePtr = std::unique_ptr<DataSource>;
 
+class DataSourceContext {
+public:
+    virtual ~DataSourceContext() = default;
+
+    virtual Status prepare(pipeline::MorselQueue* morsel_queue) { return Status::OK(); }
+    virtual Status finish(RuntimeState* state, const std::vector<ExprContext*>& runtime_in_filters,
+                          RuntimeFilterProbeCollector* runtime_bloom_filters, pipeline::MorselQueue* morsel_queue) {
+        return Status::OK();
+    }
+};
+
+using DataSourceContextPtr = std::shared_ptr<DataSourceContext>;
+
 class DataSourceProvider {
 public:
     virtual ~DataSourceProvider() = default;
 
     // First version we use TScanRange to define scan range
     // Later version we could use user-defined data.
-    virtual DataSourcePtr create_data_source(const TScanRange& scan_range) = 0;
+    virtual DataSourcePtr create_data_source(const TScanRange& scan_range, pipeline::Morsel* morsel,
+                                             pipeline::ConnectorScanContext* scan_ctx) = 0;
     // virtual DataSourcePtr create_data_source(const std::string& scan_range_spec)  = 0;
 
     // non-pipeline APIs
@@ -133,6 +152,15 @@ public:
     virtual const TupleDescriptor* tuple_descriptor(RuntimeState* state) const = 0;
 
     virtual bool always_shared_scan() const { return true; }
+
+    virtual StatusOr<pipeline::MorselQueuePtr> convert_scan_range_to_morsel_queue(
+            const std::vector<TScanRangeParams>& scan_ranges, int node_id, int32_t pipeline_dop,
+            bool enable_tablet_internal_parallel, TTabletInternalParallelMode::type tablet_internal_parallel_mode,
+            size_t num_total_scan_ranges);
+
+    virtual Status prepare_scan(RuntimeState* state) { return Status::OK(); }
+
+    virtual DataSourceContextPtr create_data_source_context() { return std::make_shared<DataSourceContext>(); }
 
 protected:
     std::vector<ExprContext*> _partition_exprs;

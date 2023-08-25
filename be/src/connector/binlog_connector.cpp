@@ -31,7 +31,7 @@ DataSourceProviderPtr BinlogConnector::create_data_source_provider(ConnectorScan
 BinlogDataSourceProvider::BinlogDataSourceProvider(ConnectorScanNode* scan_node, const TPlanNode& plan_node)
         : _scan_node(scan_node), _binlog_scan_node(plan_node.stream_scan_node.binlog_scan) {}
 
-DataSourcePtr BinlogDataSourceProvider::create_data_source(const TScanRange& scan_range) {
+DataSourcePtr BinlogDataSourceProvider::create_data_source(const TScanRange& scan_range, pipeline::Morsel* morsel, pipeline::ConnectorScanContext* scan_ctx) {
     return std::make_unique<BinlogDataSource>(this, scan_range);
 }
 

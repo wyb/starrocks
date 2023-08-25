@@ -17,6 +17,7 @@
 #include "connector/connector.h"
 #include "exec/pipeline/pipeline_builder.h"
 #include "exec/pipeline/scan/balanced_chunk_buffer.h"
+#include "exec/pipeline/scan/connector_scan_context.h"
 #include "exec/pipeline/scan/scan_operator.h"
 #include "exec/workgroup/work_group_fwd.h"
 #include "storage/chunk_helper.h"
@@ -37,7 +38,7 @@ public:
             typename std::allocator<ActiveInputKey>, NUM_LOCK_SHARD_LOG, std::mutex, true>;
 
     ConnectorScanOperatorFactory(int32_t id, ScanNode* scan_node, RuntimeState* state, size_t dop,
-                                 ChunkBufferLimiterPtr buffer_limiter);
+                                 ChunkBufferLimiterPtr buffer_limiter, ConnectorScanContextFactoryPtr ctx_factory);
 
     ~ConnectorScanOperatorFactory() override = default;
 
@@ -56,6 +57,7 @@ private:
     // TODO: refactor the OlapScanContext, move them into the context
     BalancedChunkBuffer _chunk_buffer;
     ActiveInputSet _active_inputs;
+    ConnectorScanContextFactoryPtr _ctx_factory;
 
 public:
     ConnectorScanOperatorIOTasksMemLimiter* _io_tasks_mem_limiter;
@@ -65,9 +67,12 @@ struct ConnectorScanOperatorAdaptiveProcessor;
 class ConnectorScanOperator : public ScanOperator {
 public:
     ConnectorScanOperator(OperatorFactory* factory, int32_t id, int32_t driver_sequence, int32_t dop,
-                          ScanNode* scan_node);
+                          ScanNode* scan_node, ConnectorScanContextPtr ctx);
 
-    ~ConnectorScanOperator() override = default;
+    ~ConnectorScanOperator() override;
+
+    bool has_output() const override;
+    bool is_finished() const override;
 
     Status do_prepare(RuntimeState* state) override;
     void do_close(RuntimeState* state) override;
@@ -96,12 +101,16 @@ public:
 public:
     mutable ConnectorScanOperatorAdaptiveProcessor* _adaptive_processor;
     bool _enable_adaptive_io_tasks = true;
+
+private:
+    ConnectorScanContextPtr _ctx;
 };
 
 class ConnectorChunkSource : public ChunkSource {
 public:
     ConnectorChunkSource(ScanOperator* op, RuntimeProfile* runtime_profile, MorselPtr&& morsel,
-                         ConnectorScanNode* scan_node, BalancedChunkBuffer& chunk_buffer);
+                         ConnectorScanNode* scan_node, BalancedChunkBuffer& chunk_buffer,
+                         ConnectorScanContext* scan_ctx);
 
     ~ConnectorChunkSource() override;
 

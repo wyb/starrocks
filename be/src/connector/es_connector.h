@@ -43,7 +43,7 @@ public:
     ~ESDataSourceProvider() override = default;
     friend class ESDataSource;
     ESDataSourceProvider(ConnectorScanNode* scan_node, const TPlanNode& plan_node);
-    DataSourcePtr create_data_source(const TScanRange& scan_range) override;
+    DataSourcePtr create_data_source(const TScanRange& scan_range, pipeline::Morsel* morsel, pipeline::ConnectorScanContext* scan_ctx) override;
 
     const TupleDescriptor* tuple_descriptor(RuntimeState* state) const override;
 

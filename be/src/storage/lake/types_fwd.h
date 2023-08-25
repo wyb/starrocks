@@ -39,6 +39,7 @@ using RowsetMetadata = RowsetMetadataPB;
 using RowsetMetadataPtr = std::shared_ptr<const starrocks::lake::RowsetMetadata>;
 using RowsetPtr = std::shared_ptr<starrocks::lake::Rowset>;
 using SegmentPtr = std::shared_ptr<starrocks::Segment>;
+using TabletPtr = std::shared_ptr<starrocks::lake::Tablet>;
 using TabletSchemaPtr = std::shared_ptr<const starrocks::TabletSchema>;
 using CompactionTaskPtr = std::shared_ptr<CompactionTask>;
 using ColumnUniquePtr = std::unique_ptr<Column>;

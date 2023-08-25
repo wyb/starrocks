@@ -38,7 +38,7 @@ DataSourceProviderPtr ESConnector::create_data_source_provider(ConnectorScanNode
 ESDataSourceProvider::ESDataSourceProvider(ConnectorScanNode* scan_node, const TPlanNode& plan_node)
         : _scan_node(scan_node), _es_scan_node(plan_node.es_scan_node) {}
 
-DataSourcePtr ESDataSourceProvider::create_data_source(const TScanRange& scan_range) {
+DataSourcePtr ESDataSourceProvider::create_data_source(const TScanRange& scan_range, pipeline::Morsel* morsel, pipeline::ConnectorScanContext* scan_ctx) {
     return std::make_unique<ESDataSource>(this, scan_range);
 }
 

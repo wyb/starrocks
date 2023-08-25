@@ -54,6 +54,12 @@ public:
     bool use_stream_load_thread_pool() { return _use_stream_load_thread_pool; };
 #endif
 
+    StatusOr<pipeline::MorselQueuePtr> convert_scan_range_to_morsel_queue(
+            const std::vector<TScanRangeParams>& scan_ranges, int node_id, int32_t pipeline_dop,
+            bool enable_tablet_internal_parallel, TTabletInternalParallelMode::type tablet_internal_parallel_mode,
+            size_t num_total_scan_ranges) override;
+    size_t estimated_scan_row_bytes() const { return _estimated_scan_row_bytes; }
+
 private:
     RuntimeState* _runtime_state = nullptr;
     connector::DataSourceProviderPtr _data_source_provider = nullptr;

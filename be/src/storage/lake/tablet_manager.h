@@ -62,6 +62,7 @@ public:
     [[nodiscard]] Status create_tablet(const TCreateTabletReq& req);
 
     StatusOr<Tablet> get_tablet(int64_t tablet_id);
+    StatusOr<TabletPtr> get_tablet_ptr(int64_t tablet_id);
 
     StatusOr<VersionedTablet> get_tablet(int64_t tablet_id, int64_t version);
 

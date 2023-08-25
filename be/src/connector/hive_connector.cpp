@@ -39,7 +39,7 @@ DataSourceProviderPtr HiveConnector::create_data_source_provider(ConnectorScanNo
 HiveDataSourceProvider::HiveDataSourceProvider(ConnectorScanNode* scan_node, const TPlanNode& plan_node)
         : _scan_node(scan_node), _hdfs_scan_node(plan_node.hdfs_scan_node) {}
 
-DataSourcePtr HiveDataSourceProvider::create_data_source(const TScanRange& scan_range) {
+DataSourcePtr HiveDataSourceProvider::create_data_source(const TScanRange& scan_range, pipeline::Morsel* morsel, pipeline::ConnectorScanContext* scan_ctx) {
     return std::make_unique<HiveDataSource>(this, scan_range);
 }
 

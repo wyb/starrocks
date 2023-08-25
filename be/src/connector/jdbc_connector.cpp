@@ -37,7 +37,7 @@ DataSourceProviderPtr JDBCConnector::create_data_source_provider(ConnectorScanNo
 JDBCDataSourceProvider::JDBCDataSourceProvider(ConnectorScanNode* scan_node, const TPlanNode& plan_node)
         : _scan_node(scan_node), _jdbc_scan_node(plan_node.jdbc_scan_node) {}
 
-DataSourcePtr JDBCDataSourceProvider::create_data_source(const TScanRange& scan_range) {
+DataSourcePtr JDBCDataSourceProvider::create_data_source(const TScanRange& scan_range, pipeline::Morsel* morsel, pipeline::ConnectorScanContext* scan_ctx) {
     return std::make_unique<JDBCDataSource>(this, scan_range);
 }
 

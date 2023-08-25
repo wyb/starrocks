@@ -17,6 +17,8 @@
 #include "common/constexpr.h"
 #include "exec/connector_scan_node.h"
 #include "exec/olap_scan_prepare.h"
+#include "exec/pipeline/scan/connector_scan_context.h"
+#include "exec/pipeline/scan/morsel.h"
 #include "gen_cpp/InternalService_types.h"
 #include "runtime/global_dict/parser.h"
 #include "storage/column_predicate_rewriter.h"
@@ -32,12 +34,14 @@ namespace starrocks::connector {
 
 // ================================
 
+class LakeDataSourceContext;
+using LakeDataSourceContextPtr = std::shared_ptr<LakeDataSourceContext>;
 class LakeDataSourceProvider;
 
-// TODO: support parallel scan within a single tablet
 class LakeDataSource final : public DataSource {
 public:
-    explicit LakeDataSource(const LakeDataSourceProvider* provider, const TScanRange& scan_range);
+    explicit LakeDataSource(const LakeDataSourceProvider* provider, const TScanRange& scan_range,
+                            pipeline::Morsel* morsel, pipeline::ConnectorScanContext* scan_ctx);
     ~LakeDataSource() override;
 
     std::string name() const override;
@@ -56,10 +60,9 @@ private:
     Status init_unused_output_columns(const std::vector<std::string>& unused_output_columns);
     Status init_scanner_columns(std::vector<uint32_t>& scanner_columns);
     void decide_chunk_size(bool has_predicate);
-    Status init_reader_params(const std::vector<OlapScanRange*>& key_ranges,
+    Status init_reader_params(const std::vector<std::unique_ptr<OlapScanRange>>& key_ranges,
                               const std::vector<uint32_t>& scanner_columns, std::vector<uint32_t>& reader_columns);
     Status init_tablet_reader(RuntimeState* state);
-    Status build_scan_range(RuntimeState* state);
     void init_counter(RuntimeState* state);
     void update_realtime_counter(Chunk* chunk);
     void update_counter();
@@ -67,33 +70,31 @@ private:
 private:
     const LakeDataSourceProvider* _provider;
     const TInternalScanRange _scan_range;
+    pipeline::Morsel* _morsel;
+    LakeDataSourceContextPtr _ctx;
 
-    Status _status = Status::OK();
     // The conjuncts couldn't push down to storage engine
-    std::vector<ExprContext*> _not_push_down_conjuncts;
+    //std::vector<ExprContext*> _not_push_down_conjuncts;
     ConjunctivePredicates _not_push_down_predicates;
     std::vector<uint8_t> _selection;
 
     ObjectPool _obj_pool;
+    std::shared_ptr<const TabletSchema> _tablet_schema;
+    int64_t _version = 0;
 
     RuntimeState* _runtime_state = nullptr;
     const std::vector<SlotDescriptor*>* _slots = nullptr;
-    std::vector<std::unique_ptr<OlapScanRange>> _key_ranges;
-    std::vector<OlapScanRange*> _scanner_ranges;
-    OlapScanConjunctsManager _conjuncts_manager;
-    DictOptimizeParser _dict_optimize_parser;
 
-    std::shared_ptr<const TabletSchema> _tablet_schema;
-    int64_t _version = 0;
+    // For release memory.
+    using PredicatePtr = std::unique_ptr<ColumnPredicate>;
+    std::vector<PredicatePtr> _predicate_free_pool;
+
     TabletReaderParams _params{};
     std::shared_ptr<lake::TabletReader> _reader;
     // projection iterator, doing the job of choosing |_scanner_columns| from |_reader_columns|.
     std::shared_ptr<ChunkIterator> _prj_iter;
 
     std::unordered_set<uint32_t> _unused_output_column_ids;
-    // For release memory.
-    using PredicatePtr = std::unique_ptr<ColumnPredicate>;
-    std::vector<PredicatePtr> _predicate_free_pool;
 
     // slot descriptors for each one of |output_columns|.
     std::vector<SlotDescriptor*> _query_slots;
@@ -173,19 +174,71 @@ private:
 
 // ================================
 
+class LakeDataSourceContext : public DataSourceContext {
+public:
+    explicit LakeDataSourceContext(const LakeDataSourceProvider* provider) : _provider(provider) {}
+    ~LakeDataSourceContext() override = default;
+
+    Status prepare(pipeline::MorselQueue* morsel_queue) override;
+    Status finish(RuntimeState* state, const std::vector<ExprContext*>& runtime_in_filters,
+                  RuntimeFilterProbeCollector* runtime_bloom_filters, pipeline::MorselQueue* morsel_queue) override;
+
+    OlapScanConjunctsManager& conjuncts_manager() { return _conjuncts_manager; }
+    const std::vector<ExprContext*>& not_push_down_conjuncts() const { return _not_push_down_conjuncts; }
+    const std::vector<std::unique_ptr<OlapScanRange>>& key_ranges() const { return _key_ranges; }
+
+private:
+    Status capture_tablet_rowsets(const std::vector<TInternalScanRange*>& olap_scan_ranges);
+    Status parse_conjuncts(RuntimeState* state, const std::vector<ExprContext*>& runtime_in_filters,
+                           RuntimeFilterProbeCollector* runtime_bloom_filters);
+
+    const LakeDataSourceProvider* _provider;
+
+    std::vector<ExprContext*> _conjunct_ctxs;
+    OlapScanConjunctsManager _conjuncts_manager;
+    // The conjuncts couldn't push down to storage engine
+    std::vector<ExprContext*> _not_push_down_conjuncts;
+    std::vector<std::unique_ptr<OlapScanRange>> _key_ranges;
+    DictOptimizeParser _dict_optimize_parser;
+    ObjectPool _obj_pool;
+
+    std::vector<lake::TabletPtr> _tablets;
+    std::vector<std::vector<lake::RowsetPtr>> _tablet_rowsets;
+};
+
+// ================================
+
 class LakeDataSourceProvider final : public DataSourceProvider {
 public:
     friend class LakeDataSource;
+    friend class LakeDataSourceContext;
     LakeDataSourceProvider(ConnectorScanNode* scan_node, const TPlanNode& plan_node);
     ~LakeDataSourceProvider() override = default;
 
-    DataSourcePtr create_data_source(const TScanRange& scan_range) override;
+    DataSourcePtr create_data_source(const TScanRange& scan_range, pipeline::Morsel* morsel,
+                                     pipeline::ConnectorScanContext* scan_ctx) override;
 
     Status init(ObjectPool* pool, RuntimeState* state) override;
     const TupleDescriptor* tuple_descriptor(RuntimeState* state) const override;
 
     // Make cloud native table behavior same as olap table
     bool always_shared_scan() const override { return false; }
+
+    StatusOr<pipeline::MorselQueuePtr> convert_scan_range_to_morsel_queue(
+            const std::vector<TScanRangeParams>& scan_ranges, int node_id, int32_t pipeline_dop,
+            bool enable_tablet_internal_parallel, TTabletInternalParallelMode::type tablet_internal_parallel_mode,
+            size_t num_total_scan_ranges) override;
+
+    Status prepare_scan(RuntimeState* state) override;
+
+    DataSourceContextPtr create_data_source_context() override;
+
+private:
+    StatusOr<bool> could_tablet_internal_parallel(const std::vector<TScanRangeParams>& scan_ranges,
+                                                  int32_t pipeline_dop, size_t num_total_scan_ranges,
+                                                  TTabletInternalParallelMode::type tablet_internal_parallel_mode,
+                                                  int64_t* scan_dop, int64_t* splitted_scan_rows) const;
+    StatusOr<bool> could_split_tablet_physically(const std::vector<TScanRangeParams>& scan_ranges) const;
 
 protected:
     ConnectorScanNode* _scan_node;
@@ -194,8 +247,12 @@ protected:
 
 // ================================
 
-LakeDataSource::LakeDataSource(const LakeDataSourceProvider* provider, const TScanRange& scan_range)
-        : _provider(provider), _scan_range(scan_range.internal_scan_range) {}
+LakeDataSource::LakeDataSource(const LakeDataSourceProvider* provider, const TScanRange& scan_range,
+                               pipeline::Morsel* morsel, pipeline::ConnectorScanContext* scan_ctx)
+        : _provider(provider),
+          _scan_range(scan_range.internal_scan_range),
+          _morsel(morsel),
+          _ctx(std::dynamic_pointer_cast<LakeDataSourceContext>(scan_ctx->data_source_context())) {}
 
 LakeDataSource::~LakeDataSource() {
     _reader.reset();
@@ -222,39 +279,6 @@ Status LakeDataSource::open(RuntimeState* state) {
 
     init_counter(state);
 
-    // eval const conjuncts
-    RETURN_IF_ERROR(OlapScanConjunctsManager::eval_const_conjuncts(_conjunct_ctxs, &_status));
-
-    _dict_optimize_parser.set_mutable_dict_maps(state, state->mutable_query_global_dict_map());
-    DictOptimizeParser::rewrite_descriptor(state, _conjunct_ctxs, thrift_lake_scan_node.dict_string_id_to_int_ids,
-                                           &(tuple_desc->decoded_slots()));
-
-    // Init _conjuncts_manager.
-    OlapScanConjunctsManager& cm = _conjuncts_manager;
-    cm.conjunct_ctxs_ptr = &_conjunct_ctxs;
-    cm.tuple_desc = tuple_desc;
-    cm.obj_pool = &_obj_pool;
-    cm.key_column_names = &thrift_lake_scan_node.sort_key_column_names;
-    cm.runtime_filters = _runtime_filters;
-    cm.runtime_state = state;
-
-    const TQueryOptions& query_options = state->query_options();
-    int32_t max_scan_key_num;
-    if (query_options.__isset.max_scan_key_num && query_options.max_scan_key_num > 0) {
-        max_scan_key_num = query_options.max_scan_key_num;
-    } else {
-        max_scan_key_num = config::max_scan_key_num;
-    }
-    bool enable_column_expr_predicate = false;
-    if (thrift_lake_scan_node.__isset.enable_column_expr_predicate) {
-        enable_column_expr_predicate = thrift_lake_scan_node.enable_column_expr_predicate;
-    }
-
-    // Parse conjuncts via _conjuncts_manager.
-    RETURN_IF_ERROR(cm.parse_conjuncts(true, max_scan_key_num, enable_column_expr_predicate));
-
-    RETURN_IF_ERROR(build_scan_range(_runtime_state));
-
     RETURN_IF_ERROR(init_tablet_reader(_runtime_state));
     return Status::OK();
 }
@@ -272,7 +296,6 @@ void LakeDataSource::close(RuntimeState* state) {
         _reader.reset();
     }
     _predicate_free_pool.clear();
-    _dict_optimize_parser.close(state);
 }
 
 Status LakeDataSource::get_next(RuntimeState* state, ChunkPtr* chunk) {
@@ -299,9 +322,9 @@ Status LakeDataSource::get_next(RuntimeState* state, ChunkPtr* chunk) {
             chunk_ptr->filter(_selection);
             DCHECK_CHUNK(chunk_ptr);
         }
-        if (!_not_push_down_conjuncts.empty()) {
+        if (!_ctx->not_push_down_conjuncts().empty()) {
             SCOPED_TIMER(_expr_filter_timer);
-            RETURN_IF_ERROR(ExecNode::eval_conjuncts(_not_push_down_conjuncts, chunk_ptr));
+            RETURN_IF_ERROR(ExecNode::eval_conjuncts(_ctx->not_push_down_conjuncts(), chunk_ptr));
             DCHECK_CHUNK(chunk_ptr);
         }
         TRY_CATCH_ALLOC_SCOPE_END()
@@ -388,7 +411,7 @@ void LakeDataSource::decide_chunk_size(bool has_predicate) {
     }
 }
 
-Status LakeDataSource::init_reader_params(const std::vector<OlapScanRange*>& key_ranges,
+Status LakeDataSource::init_reader_params(const std::vector<std::unique_ptr<OlapScanRange>>& key_ranges,
                                           const std::vector<uint32_t>& scanner_columns,
                                           std::vector<uint32_t>& reader_columns) {
     const TLakeScanNode& thrift_lake_scan_node = _provider->_t_lake_scan_node;
@@ -401,10 +424,11 @@ Status LakeDataSource::init_reader_params(const std::vector<OlapScanRange*>& key
     _params.runtime_state = _runtime_state;
     _params.use_page_cache = !config::disable_storage_page_cache && _scan_range.fill_data_cache;
     _params.fill_data_cache = _scan_range.fill_data_cache;
-    _params.runtime_range_pruner = OlapRuntimeScanRangePruner(parser, _conjuncts_manager.unarrived_runtime_filters());
-
+    _params.runtime_range_pruner =
+            OlapRuntimeScanRangePruner(parser, _ctx->conjuncts_manager().unarrived_runtime_filters());
+    _morsel->init_tablet_reader_params(&_params);
     std::vector<PredicatePtr> preds;
-    RETURN_IF_ERROR(_conjuncts_manager.get_column_predicates(parser, &preds));
+    RETURN_IF_ERROR(_ctx->conjuncts_manager().get_column_predicates(parser, &preds));
     decide_chunk_size(!preds.empty());
     _has_any_predicate = (!preds.empty());
     for (auto& p : preds) {
@@ -467,7 +491,7 @@ Status LakeDataSource::init_tablet_reader(RuntimeState* runtime_state) {
     RETURN_IF_ERROR(init_global_dicts(&_params));
     RETURN_IF_ERROR(init_unused_output_columns(thrift_lake_scan_node.unused_output_column_name));
     RETURN_IF_ERROR(init_scanner_columns(scanner_columns));
-    RETURN_IF_ERROR(init_reader_params(_scanner_ranges, scanner_columns, reader_columns));
+    RETURN_IF_ERROR(init_reader_params(_ctx->key_ranges(), scanner_columns, reader_columns));
     starrocks::Schema child_schema = ChunkHelper::convert_schema(_tablet_schema, reader_columns);
 
     ASSIGN_OR_RETURN(auto tablet, ExecEnv::GetInstance()->lake_tablet_manager()->get_tablet(_scan_range.tablet_id));
@@ -479,8 +503,8 @@ Status LakeDataSource::init_tablet_reader(RuntimeState* runtime_state) {
         _prj_iter = new_projection_iterator(output_schema, _reader);
     }
 
-    if (!_not_push_down_conjuncts.empty() || !_not_push_down_predicates.empty()) {
-        _expr_filter_timer = ADD_TIMER(_runtime_profile, "ExprFilterTime");
+    if (!_ctx->not_push_down_conjuncts().empty() || !_not_push_down_predicates.empty()) {
+        _expr_filter_timer = ADD_CHILD_TIMER(_runtime_profile, "ExprFilterTime", "IOTaskExecTime");
     }
 
     DCHECK(_params.global_dictmaps != nullptr);
@@ -489,27 +513,6 @@ Status LakeDataSource::init_tablet_reader(RuntimeState* runtime_state) {
 
     RETURN_IF_ERROR(_reader->prepare());
     RETURN_IF_ERROR(_reader->open(_params));
-    return Status::OK();
-}
-
-Status LakeDataSource::build_scan_range(RuntimeState* state) {
-    // Get key_ranges and not_push_down_conjuncts from _conjuncts_manager.
-    RETURN_IF_ERROR(_conjuncts_manager.get_key_ranges(&_key_ranges));
-    _conjuncts_manager.get_not_push_down_conjuncts(&_not_push_down_conjuncts);
-    RETURN_IF_ERROR(_dict_optimize_parser.rewrite_conjuncts(&_not_push_down_conjuncts, state));
-
-    int scanners_per_tablet = 64;
-    int num_ranges = _key_ranges.size();
-    int ranges_per_scanner = std::max(1, num_ranges / scanners_per_tablet);
-    for (int i = 0; i < num_ranges;) {
-        _scanner_ranges.push_back(_key_ranges[i].get());
-        i++;
-        for (int j = 1;
-             i < num_ranges && j < ranges_per_scanner && _key_ranges[i]->end_include == _key_ranges[i - 1]->end_include;
-             ++j, ++i) {
-            _scanner_ranges.push_back(_key_ranges[i].get());
-        }
-    }
     return Status::OK();
 }
 
@@ -720,11 +723,107 @@ void LakeDataSource::update_counter() {
 
 // ================================
 
+Status LakeDataSourceContext::prepare(pipeline::MorselQueue* morsel_queue) {
+    RETURN_IF_ERROR(capture_tablet_rowsets(morsel_queue->olap_scan_ranges()));
+    return Status::OK();
+}
+
+Status LakeDataSourceContext::capture_tablet_rowsets(const std::vector<TInternalScanRange*>& olap_scan_ranges) {
+    _tablet_rowsets.resize(olap_scan_ranges.size());
+    _tablets.resize(olap_scan_ranges.size());
+    for (int i = 0; i < olap_scan_ranges.size(); ++i) {
+        auto* scan_range = olap_scan_ranges[i];
+        int64_t version = strtoul(scan_range->version.c_str(), nullptr, 10);
+        ASSIGN_OR_RETURN(auto tablet,
+                         ExecEnv::GetInstance()->lake_tablet_manager()->get_tablet_ptr(scan_range->tablet_id));
+        ASSIGN_OR_RETURN(_tablet_rowsets[i], tablet->get_rowsets(version));
+        _tablets[i] = std::move(tablet);
+    }
+
+    return Status::OK();
+}
+
+Status LakeDataSourceContext::finish(RuntimeState* state, const std::vector<ExprContext*>& runtime_in_filters,
+                                     RuntimeFilterProbeCollector* runtime_bloom_filters, pipeline::MorselQueue* morsel_queue) {
+    RETURN_IF_ERROR(parse_conjuncts(state, runtime_in_filters, runtime_bloom_filters));
+    morsel_queue->set_key_ranges(_key_ranges);
+
+    std::vector<BaseTabletSharedPtr> tablets;
+    for (auto& tablet : _tablets) {
+        tablets.emplace_back(tablet);
+    }
+    morsel_queue->set_tablets(std::move(tablets));
+
+    std::vector<std::vector<BaseRowsetSharedPtr>> tablet_rowsets;
+    for (auto& rowsets : _tablet_rowsets) {
+        tablet_rowsets.emplace_back();
+        auto& rss = tablet_rowsets.back();
+        for (auto& rowset : rowsets) {
+            rss.emplace_back(rowset);
+        }
+    }
+    morsel_queue->set_tablet_rowsets(std::move(tablet_rowsets));
+    return Status::OK();
+}
+
+Status LakeDataSourceContext::parse_conjuncts(RuntimeState* state, const std::vector<ExprContext*>& runtime_in_filters,
+                                              RuntimeFilterProbeCollector* runtime_bloom_filters) {
+    const TLakeScanNode& thrift_lake_scan_node = _provider->_t_lake_scan_node;
+    const TupleDescriptor* tuple_desc = state->desc_tbl().get_tuple_descriptor(thrift_lake_scan_node.tuple_id);
+
+    // Get _conjunct_ctxs.
+    _conjunct_ctxs = _provider->_scan_node->conjunct_ctxs();
+    _conjunct_ctxs.insert(_conjunct_ctxs.end(), runtime_in_filters.begin(), runtime_in_filters.end());
+
+    // eval_const_conjuncts.
+    Status status;
+    RETURN_IF_ERROR(OlapScanConjunctsManager::eval_const_conjuncts(_conjunct_ctxs, &status));
+    if (!status.ok()) {
+        return status;
+    }
+
+    // Init _conjuncts_manager.
+    OlapScanConjunctsManager& cm = _conjuncts_manager;
+    cm.conjunct_ctxs_ptr = &_conjunct_ctxs;
+    cm.tuple_desc = tuple_desc;
+    cm.obj_pool = &_obj_pool;
+    cm.key_column_names = &thrift_lake_scan_node.sort_key_column_names;
+    cm.runtime_filters = runtime_bloom_filters;
+    cm.runtime_state = state;
+
+    const TQueryOptions& query_options = state->query_options();
+    int32_t max_scan_key_num;
+    if (query_options.__isset.max_scan_key_num && query_options.max_scan_key_num > 0) {
+        max_scan_key_num = query_options.max_scan_key_num;
+    } else {
+        max_scan_key_num = config::max_scan_key_num;
+    }
+    bool enable_column_expr_predicate = false;
+    if (thrift_lake_scan_node.__isset.enable_column_expr_predicate) {
+        enable_column_expr_predicate = thrift_lake_scan_node.enable_column_expr_predicate;
+    }
+
+    // Parse conjuncts via _conjuncts_manager.
+    RETURN_IF_ERROR(cm.parse_conjuncts(true, max_scan_key_num, enable_column_expr_predicate));
+
+    // Get key_ranges and not_push_down_conjuncts from _conjuncts_manager.
+    RETURN_IF_ERROR(_conjuncts_manager.get_key_ranges(&_key_ranges));
+    _conjuncts_manager.get_not_push_down_conjuncts(&_not_push_down_conjuncts);
+
+    _dict_optimize_parser.set_mutable_dict_maps(state, state->mutable_query_global_dict_map());
+    RETURN_IF_ERROR(_dict_optimize_parser.rewrite_conjuncts(&_not_push_down_conjuncts, state));
+
+    return Status::OK();
+}
+
+// ================================
+
 LakeDataSourceProvider::LakeDataSourceProvider(ConnectorScanNode* scan_node, const TPlanNode& plan_node)
         : _scan_node(scan_node), _t_lake_scan_node(plan_node.lake_scan_node) {}
 
-DataSourcePtr LakeDataSourceProvider::create_data_source(const TScanRange& scan_range) {
-    return std::make_unique<LakeDataSource>(this, scan_range);
+DataSourcePtr LakeDataSourceProvider::create_data_source(const TScanRange& scan_range, pipeline::Morsel* morsel,
+                                                         pipeline::ConnectorScanContext* scan_ctx) {
+    return std::make_unique<LakeDataSource>(this, scan_range, morsel, scan_ctx);
 }
 
 Status LakeDataSourceProvider::init(ObjectPool* pool, RuntimeState* state) {
@@ -740,6 +839,103 @@ Status LakeDataSourceProvider::init(ObjectPool* pool, RuntimeState* state) {
 
 const TupleDescriptor* LakeDataSourceProvider::tuple_descriptor(RuntimeState* state) const {
     return state->desc_tbl().get_tuple_descriptor(_t_lake_scan_node.tuple_id);
+}
+
+StatusOr<pipeline::MorselQueuePtr> LakeDataSourceProvider::convert_scan_range_to_morsel_queue(
+        const std::vector<TScanRangeParams>& scan_ranges, int node_id, int32_t pipeline_dop,
+        bool enable_tablet_internal_parallel, TTabletInternalParallelMode::type tablet_internal_parallel_mode,
+        size_t num_total_scan_ranges) {
+    pipeline::Morsels morsels;
+    for (const auto& scan_range : scan_ranges) {
+        morsels.emplace_back(std::make_unique<pipeline::ScanMorsel>(node_id, scan_range));
+    }
+
+    // None tablet to read shouldn't use tablet internal parallel.
+    if (morsels.empty()) {
+        return std::make_unique<pipeline::FixedMorselQueue>(std::move(morsels));
+    }
+
+    // Disable by the session variable shouldn't use tablet internal parallel.
+    if (!enable_tablet_internal_parallel) {
+        return std::make_unique<pipeline::FixedMorselQueue>(std::move(morsels));
+    }
+
+    int64_t scan_dop;
+    int64_t splitted_scan_rows;
+    ASSIGN_OR_RETURN(auto could,
+                     could_tablet_internal_parallel(scan_ranges, pipeline_dop, num_total_scan_ranges,
+                                                    tablet_internal_parallel_mode, &scan_dop, &splitted_scan_rows));
+    if (!could) {
+        return std::make_unique<pipeline::FixedMorselQueue>(std::move(morsels));
+    }
+
+    // Split tablet physically.
+    ASSIGN_OR_RETURN(bool ok, could_split_tablet_physically(scan_ranges));
+    if (ok) {
+        return std::make_unique<pipeline::PhysicalSplitMorselQueue>(std::move(morsels), scan_dop, splitted_scan_rows);
+    }
+
+    return std::make_unique<pipeline::LogicalSplitMorselQueue>(std::move(morsels), scan_dop, splitted_scan_rows);
+}
+
+StatusOr<bool> LakeDataSourceProvider::could_tablet_internal_parallel(
+        const std::vector<TScanRangeParams>& scan_ranges, int32_t pipeline_dop, size_t num_total_scan_ranges,
+        TTabletInternalParallelMode::type tablet_internal_parallel_mode, int64_t* scan_dop,
+        int64_t* splitted_scan_rows) const {
+    //if (_t_lake_scan_node.use_pk_index) {
+    //    return false;
+    //}
+    bool force_split = tablet_internal_parallel_mode == TTabletInternalParallelMode::type::FORCE_SPLIT;
+    // The enough number of tablets shouldn't use tablet internal parallel.
+    if (!force_split && num_total_scan_ranges >= pipeline_dop) {
+        return false;
+    }
+
+    int64_t num_table_rows = 0;
+    for (const auto& tablet_scan_range : scan_ranges) {
+        ASSIGN_OR_RETURN(auto tablet, ExecEnv::GetInstance()->lake_tablet_manager()->get_tablet(
+                tablet_scan_range.scan_range.internal_scan_range.tablet_id));
+        num_table_rows += static_cast<int64_t>(tablet.num_rows());
+    }
+
+    // splitted_scan_rows is restricted in the range [min_splitted_scan_rows, max_splitted_scan_rows].
+    *splitted_scan_rows = config::tablet_internal_parallel_max_splitted_scan_bytes / _scan_node->estimated_scan_row_bytes();
+    *splitted_scan_rows =
+            std::max(config::tablet_internal_parallel_min_splitted_scan_rows,
+                     std::min(*splitted_scan_rows, config::tablet_internal_parallel_max_splitted_scan_rows));
+    // scan_dop is restricted in the range [1, dop].
+    *scan_dop = num_table_rows / *splitted_scan_rows;
+    *scan_dop = std::max<int64_t>(1, std::min<int64_t>(*scan_dop, pipeline_dop));
+
+    if (force_split) {
+        return true;
+    }
+
+    bool could = *scan_dop >= pipeline_dop || *scan_dop >= config::tablet_internal_parallel_min_scan_dop;
+    return could;
+}
+
+StatusOr<bool> LakeDataSourceProvider::could_split_tablet_physically(const std::vector<TScanRangeParams>& scan_ranges) const {
+    // Keys type needn't merge or aggregate.
+    ASSIGN_OR_RETURN(auto first_tablet, ExecEnv::GetInstance()->lake_tablet_manager()->get_tablet(
+            scan_ranges[0].scan_range.internal_scan_range.tablet_id));
+    KeysType keys_type = first_tablet.tablet_schema()->keys_type();
+    const auto skip_aggr = _t_lake_scan_node.is_preaggregation;
+    bool is_keys_type_matched = keys_type == PRIMARY_KEYS || keys_type == DUP_KEYS ||
+                                ((keys_type == UNIQUE_KEYS || keys_type == AGG_KEYS) && skip_aggr);
+    return is_keys_type_matched;
+}
+
+Status LakeDataSourceProvider::prepare_scan(RuntimeState* state) {
+    const auto& conjunct_ctxs = _scan_node->conjunct_ctxs();
+    auto tuple_desc = state->desc_tbl().get_tuple_descriptor(_t_lake_scan_node.tuple_id);
+    DictOptimizeParser::rewrite_descriptor(state, conjunct_ctxs, _t_lake_scan_node.dict_string_id_to_int_ids,
+                                           &(tuple_desc->decoded_slots()));
+    return Status::OK();
+}
+
+DataSourceContextPtr LakeDataSourceProvider::create_data_source_context() {
+    return std::make_shared<LakeDataSourceContext>(this);
 }
 
 // ================================

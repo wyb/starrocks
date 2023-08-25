@@ -43,7 +43,7 @@ public:
     ~BinlogDataSourceProvider() override = default;
     friend class BinlogDataSource;
     BinlogDataSourceProvider(ConnectorScanNode* scan_node, const TPlanNode& plan_node);
-    DataSourcePtr create_data_source(const TScanRange& scan_range) override;
+    DataSourcePtr create_data_source(const TScanRange& scan_range, pipeline::Morsel* morsel, pipeline::ConnectorScanContext* scan_ctx) override;
 
     bool insert_local_exchange_operator() const override { return false; }
     bool accept_empty_scan_ranges() const override { return false; }

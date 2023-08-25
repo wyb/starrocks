@@ -34,7 +34,7 @@ DataSourceProviderPtr FileConnector::create_data_source_provider(ConnectorScanNo
 FileDataSourceProvider::FileDataSourceProvider(ConnectorScanNode* scan_node, const TPlanNode& plan_node)
         : _scan_node(scan_node), _file_scan_node(plan_node.file_scan_node) {}
 
-DataSourcePtr FileDataSourceProvider::create_data_source(const TScanRange& scan_range) {
+DataSourcePtr FileDataSourceProvider::create_data_source(const TScanRange& scan_range, pipeline::Morsel* morsel, pipeline::ConnectorScanContext* scan_ctx) {
     return std::make_unique<FileDataSource>(this, scan_range);
 }
 
