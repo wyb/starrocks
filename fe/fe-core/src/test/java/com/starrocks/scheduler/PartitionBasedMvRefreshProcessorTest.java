@@ -1853,8 +1853,7 @@ public class PartitionBasedMvRefreshProcessorTest extends MVRefreshTestBase {
         OlapTable tbl1 = ((OlapTable) testDb.getTable("tbl1"));
         new MockUp<PartitionBasedMvRefreshProcessor>() {
             @Mock
-            public void refreshMaterializedView(MvTaskRunContext mvContext, ExecPlan execPlan,
-                                                InsertStmt insertStmt) throws Exception {
+            public void refreshMaterializedView(MvTaskRunContext mvContext, InsertStmt insertStmt) throws Exception {
                 String addPartitionSql =
                         "ALTER TABLE test.tbl1 ADD PARTITION p100 VALUES [('9999-04-01'),('9999-05-01'))";
                 String insertSql = "insert into tbl1 partition(p100) values('9999-04-01', 3, 10);";
@@ -1871,7 +1870,7 @@ public class PartitionBasedMvRefreshProcessorTest extends MVRefreshTestBase {
                 ctx.setThreadLocalInfo();
                 ctx.setStmtId(new AtomicInteger().incrementAndGet());
                 ctx.setExecutionId(UUIDUtil.toTUniqueId(ctx.getQueryId()));
-                executor.handleDMLStmt(execPlan, insertStmt);
+                executor.handleDMLStmt(insertStmt);
             }
         };
 
@@ -1942,8 +1941,7 @@ public class PartitionBasedMvRefreshProcessorTest extends MVRefreshTestBase {
         OlapTable tbl1 = ((OlapTable) testDb.getTable("tbl1"));
         new MockUp<PartitionBasedMvRefreshProcessor>() {
             @Mock
-            public void refreshMaterializedView(MvTaskRunContext mvContext, ExecPlan execPlan,
-                                                InsertStmt insertStmt) throws Exception {
+            public void refreshMaterializedView(MvTaskRunContext mvContext, InsertStmt insertStmt) throws Exception {
                 String dropPartitionSql = "ALTER TABLE test.tbl1 DROP PARTITION p100";
                 try {
                     new StmtExecutor(connectContext, dropPartitionSql).execute();
@@ -1957,7 +1955,7 @@ public class PartitionBasedMvRefreshProcessorTest extends MVRefreshTestBase {
                 ctx.setThreadLocalInfo();
                 ctx.setStmtId(new AtomicInteger().incrementAndGet());
                 ctx.setExecutionId(UUIDUtil.toTUniqueId(ctx.getQueryId()));
-                executor.handleDMLStmt(execPlan, insertStmt);
+                executor.handleDMLStmt(insertStmt);
             }
         };
 

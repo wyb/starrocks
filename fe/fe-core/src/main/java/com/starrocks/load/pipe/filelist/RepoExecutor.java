@@ -61,11 +61,11 @@ public class RepoExecutor {
             StatementBase parsedStmt = SqlParser.parseOneWithStarRocksDialect(sql, context.getSessionVariable());
             Preconditions.checkState(parsedStmt instanceof DmlStmt, "the statement should be dml");
             DmlStmt dmlStmt = (DmlStmt) parsedStmt;
-            ExecPlan execPlan = StatementPlanner.plan(parsedStmt, context, TResultSinkType.HTTP_PROTOCAL);
+            //ExecPlan execPlan = StatementPlanner.plan(parsedStmt, context, TResultSinkType.HTTP_PROTOCAL);
             StmtExecutor executor = new StmtExecutor(context, parsedStmt);
             context.setExecutor(executor);
             context.setQueryId(UUIDUtil.genUUID());
-            executor.handleDMLStmt(execPlan, dmlStmt);
+            executor.handleDMLStmt(dmlStmt);
         } catch (Exception e) {
             LOG.error("RepoExecutor execute SQL {} failed: {}", sql, e.getMessage(), e);
             throw new SemanticException(String.format("execute sql failed: %s", e.getMessage()), e);

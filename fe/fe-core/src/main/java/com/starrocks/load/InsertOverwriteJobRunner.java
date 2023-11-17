@@ -39,7 +39,6 @@ import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.QueryState;
 import com.starrocks.qe.StmtExecutor;
 import com.starrocks.server.GlobalStateMgr;
-import com.starrocks.sql.StatementPlanner;
 import com.starrocks.sql.analyzer.AnalyzerUtils;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.AddPartitionClause;
@@ -49,7 +48,6 @@ import com.starrocks.sql.ast.PartitionDesc;
 import com.starrocks.sql.ast.PartitionNames;
 import com.starrocks.sql.ast.RangePartitionDesc;
 import com.starrocks.sql.common.DmlException;
-import com.starrocks.sql.plan.ExecPlan;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -318,8 +316,9 @@ public class InsertOverwriteJobRunner {
 
     private void executeInsert() throws Exception {
         long insertStartTimestamp = System.currentTimeMillis();
-        // should replan here because prepareInsert has changed the targetPartitionNames of insertStmt
-        ExecPlan newPlan = StatementPlanner.plan(insertStmt, context);
+        // should replan because prepareInsert has changed the targetPartitionNames of insertStmt,
+        // and `handleDMLStmt` will replan.
+
         // Use `handleDMLStmt` instead of `handleDMLStmtWithProfile` because cannot call `writeProfile` in
         // InsertOverwriteJobRunner.
         // InsertOverWriteJob is executed as below:
@@ -329,7 +328,7 @@ public class InsertOverwriteJobRunner {
         //  - InsertOverwriteJobRunner#executeInsert
         //  - StmtExecutor#handleDMLStmt <- no call `handleDMLStmt` again.
         // `writeProfile` is called in `handleDMLStmt`, and no need call it again later.
-        stmtExecutor.handleDMLStmt(newPlan, insertStmt);
+        stmtExecutor.handleDMLStmt(insertStmt);
         insertElapse = System.currentTimeMillis() - insertStartTimestamp;
         if (context.getState().getStateType() == QueryState.MysqlStateType.ERR) {
             LOG.warn("insert overwrite failed. error message:{}", context.getState().getErrorMessage());

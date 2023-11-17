@@ -104,7 +104,6 @@ import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.planner.HdfsScanNode;
 import com.starrocks.planner.HiveTableSink;
 import com.starrocks.planner.OlapScanNode;
-import com.starrocks.planner.OlapTableSink;
 import com.starrocks.planner.PlanFragment;
 import com.starrocks.planner.ScanNode;
 import com.starrocks.privilege.AccessDeniedException;
@@ -485,6 +484,8 @@ public class StmtExecutor {
                         parsedStmt = prepareStmt.assignValues(executeStmt.getParamsExpr());
                         parsedStmt.setOrigStmt(originStmt);
                         execPlan = StatementPlanner.plan(parsedStmt, context);
+                    } else if (parsedStmt instanceof DmlStmt) {
+                        // do nothing
                     } else {
                         execPlan = StatementPlanner.plan(parsedStmt, context);
                         if (parsedStmt instanceof QueryStatement && context.shouldDumpQuery()) {
@@ -660,7 +661,7 @@ public class StmtExecutor {
                     throw new AnalysisException("old planner does not support CTAS statement");
                 }
             } else if (parsedStmt instanceof DmlStmt) {
-                handleDMLStmtWithProfile(execPlan, (DmlStmt) parsedStmt);
+                handleDMLStmtWithProfile((DmlStmt) parsedStmt);
             } else if (parsedStmt instanceof DdlStmt) {
                 handleDdlStmt();
             } else if (parsedStmt instanceof ShowStmt) {
@@ -782,9 +783,7 @@ public class StmtExecutor {
         // if create table failed should not drop table. because table may already exist,
         // and for other cases the exception will throw and the rest of the code will not be executed.
         try {
-            InsertStmt insertStmt = createTableAsSelectStmt.getInsertStmt();
-            ExecPlan execPlan = new StatementPlanner().plan(insertStmt, context);
-            handleDMLStmtWithProfile(execPlan, ((CreateTableAsSelectStmt) parsedStmt).getInsertStmt());
+            handleDMLStmtWithProfile(((CreateTableAsSelectStmt) parsedStmt).getInsertStmt());
             if (context.getState().getStateType() == MysqlStateType.ERR) {
                 ((CreateTableAsSelectStmt) parsedStmt).dropTable(context);
             }
@@ -1736,13 +1735,14 @@ public class StmtExecutor {
      * `handleDMLStmtWithProfile` executes DML statement and write profile at the end.
      * NOTE: `writeProfile` can only be called once, otherwise the profile detail will be lost.
      */
-    public void handleDMLStmtWithProfile(ExecPlan execPlan, DmlStmt stmt) throws Exception {
+    public void handleDMLStmtWithProfile(DmlStmt stmt) throws Exception {
         try {
-            handleDMLStmt(execPlan, stmt);
+            handleDMLStmt(stmt);
         } catch (Throwable t) {
             LOG.warn("DML statement(" + originStmt.originStmt + ") process failed.", t);
             throw t;
         } finally {
+            ExecPlan execPlan = StatementPlanner.plan(stmt, context);
             boolean isAsync = false;
             if (context.isProfileEnabled()) {
                 isAsync = tryProcessProfileAsync(execPlan);
@@ -1763,7 +1763,7 @@ public class StmtExecutor {
     /**
      * `handleDMLStmt` only executes DML statement and no write profile at the end.
      */
-    public void handleDMLStmt(ExecPlan execPlan, DmlStmt stmt) throws Exception {
+    public void handleDMLStmt(DmlStmt stmt) throws Exception {
         boolean isExplainAnalyze = parsedStmt.isExplain()
                 && StatementBase.ExplainLevel.ANALYZE.equals(parsedStmt.getExplainLevel());
         boolean isSchedulerExplain = parsedStmt.isExplain()
@@ -1776,15 +1776,14 @@ public class StmtExecutor {
         } else if (isSchedulerExplain) {
             // Do nothing.
         } else if (stmt.isExplain()) {
+            ExecPlan execPlan = StatementPlanner.plan(stmt, context);
             handleExplainStmt(buildExplainString(execPlan, ResourceGroupClassifier.QueryType.INSERT));
             return;
-        }
-        if (context.getQueryDetail() != null) {
-            context.getQueryDetail().setExplain(buildExplainString(execPlan, ResourceGroupClassifier.QueryType.INSERT));
         }
 
         // special handling for delete of non-primary key table, using old handler
         if (stmt instanceof DeleteStmt && ((DeleteStmt) stmt).shouldHandledByDeleteHandler()) {
+            StatementPlanner.plan(stmt, context);
             try {
                 context.getGlobalStateMgr().getDeleteMgr().process((DeleteStmt) stmt);
                 context.getState().setOk();
@@ -1835,6 +1834,7 @@ public class StmtExecutor {
                     "Unsupported dml statement " + parsedStmt.getClass().getSimpleName());
         }
 
+        ExecPlan execPlan = null;
         TransactionState.LoadJobSourceType sourceType = TransactionState.LoadJobSourceType.INSERT_STREAMING;
         MetricRepo.COUNTER_LOAD_ADD.increase(1L);
         long transactionId = -1;
@@ -1856,9 +1856,13 @@ public class StmtExecutor {
                     sourceType,
                     context.getSessionVariable().getQueryTimeoutS(),
                     authenticateParams);
+            stmt.setTxnId(transactionId);
+
+            execPlan = StatementPlanner.plan(stmt, context);
         } else if (targetTable instanceof SystemTable || targetTable.isIcebergTable() || targetTable.isHiveTable()
                 || targetTable.isTableFunctionTable()) {
             // schema table and iceberg and hive table does not need txn
+            execPlan = StatementPlanner.plan(stmt, context);
         } else {
             transactionId = transactionMgr.beginTransaction(
                     database.getId(),
@@ -1868,15 +1872,9 @@ public class StmtExecutor {
                             FrontendOptions.getLocalHostAddress()),
                     sourceType,
                     context.getSessionVariable().getQueryTimeoutS());
+            stmt.setTxnId(transactionId);
 
-            // The metadata may be changed between plan() and beginTransaction().
-            // When to beginTransaction(), the plan is not ready and the tablet is dropped by balance.
-            // So we need to get txn first, to make the dropping tablet procedure to wait.
-            // This is the re-plan of the insert to fix the issue
-
-            if (Config.replan_on_insert) {
-                execPlan = StatementPlanner.plan(stmt, context);
-            }
+            execPlan = StatementPlanner.plan(stmt, context);
 
             // add table indexes to transaction state
             txnState = transactionMgr.getTransactionState(database.getId(), transactionId);
@@ -1886,6 +1884,10 @@ public class StmtExecutor {
             if (targetTable instanceof OlapTable) {
                 txnState.addTableIndexes((OlapTable) targetTable);
             }
+        }
+
+        if (context.getQueryDetail() != null) {
+            context.getQueryDetail().setExplain(buildExplainString(execPlan, ResourceGroupClassifier.QueryType.INSERT));
         }
         // Every time set no send flag and clean all data in buffer
         if (context.getMysqlChannel() != null) {
@@ -1902,16 +1904,6 @@ public class StmtExecutor {
         boolean insertError = false;
         String trackingSql = "";
         try {
-            if (execPlan.getFragments().get(0).getSink() instanceof OlapTableSink) {
-                // if sink is OlapTableSink Assigned to Be execute this sql [cn execute OlapTableSink will crash]
-                context.getSessionVariable().setPreferComputeNode(false);
-                context.getSessionVariable().setUseComputeNodes(0);
-                OlapTableSink dataSink = (OlapTableSink) execPlan.getFragments().get(0).getSink();
-                dataSink.init(context.getExecutionId(), transactionId, database.getId(),
-                        ConnectContext.get().getSessionVariable().getQueryTimeoutS());
-                dataSink.complete();
-            }
-
             coord = getCoordinatorFactory().createInsertScheduler(
                     context, execPlan.getFragments(), execPlan.getScanNodes(), execPlan.getDescTbl().toThrift());
 

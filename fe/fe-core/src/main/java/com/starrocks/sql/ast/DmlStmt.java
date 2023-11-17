@@ -21,6 +21,7 @@ import com.starrocks.sql.parser.NodePosition;
 import java.util.Map;
 
 public abstract class DmlStmt extends StatementBase {
+    private long txnId;
 
     private Map<String, String> optHints;
 
@@ -41,5 +42,13 @@ public abstract class DmlStmt extends StatementBase {
 
     public void setOptHints(Map<String, String> optHints) {
         this.optHints = optHints;
+    }
+
+    public long getTxnId() {
+        return txnId;
+    }
+
+    public void setTxnId(long txnId) {
+        this.txnId = txnId;
     }
 }

@@ -280,7 +280,7 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
         insertStmt = prepareRefreshPlan(refTableRefreshPartitions, mvToRefreshedPartitions, refTablePartitionNames);
 
         // execute the ExecPlan of insert outside lock
-        refreshMaterializedView(mvContext, mvContext.getExecPlan(), insertStmt);
+        refreshMaterializedView(mvContext, insertStmt);
 
         // insert execute successfully, update the meta of materialized view according to ExecPlan
         updateMeta(mvToRefreshedPartitions, mvContext.getExecPlan(), refTableRefreshPartitions);
@@ -1404,9 +1404,7 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
     }
 
     @VisibleForTesting
-    public void refreshMaterializedView(MvTaskRunContext mvContext, ExecPlan execPlan, InsertStmt insertStmt)
-            throws Exception {
-        Preconditions.checkNotNull(execPlan);
+    public void refreshMaterializedView(MvTaskRunContext mvContext, InsertStmt insertStmt) throws Exception {
         Preconditions.checkNotNull(insertStmt);
         ConnectContext ctx = mvContext.getCtx();
         StmtExecutor executor = new StmtExecutor(ctx, insertStmt);
@@ -1419,7 +1417,7 @@ public class PartitionBasedMvRefreshProcessor extends BaseTaskRunProcessor {
         ctx.setExecutionId(UUIDUtil.toTUniqueId(ctx.getQueryId()));
         ctx.getSessionVariable().setEnableInsertStrict(false);
         try {
-            executor.handleDMLStmtWithProfile(execPlan, insertStmt);
+            executor.handleDMLStmtWithProfile(insertStmt);
         } catch (Exception e) {
             LOG.warn("refresh materialized view {} failed: {}", materializedView.getName(), e);
             throw e;
