@@ -60,6 +60,7 @@ Status PushBrokerReader::init(const TBrokerScanRange& t_scan_range, const TPushR
 
     // init counter
     _counter = std::make_unique<ScannerCounter>();
+    _init_counter();
 
     // init scanner
     FileScanner* scanner = nullptr;
@@ -221,6 +222,7 @@ Status PushBrokerReader::next_chunk(ChunkPtr* chunk) {
 
     auto res = _scanner->get_next();
     if (res.status().is_end_of_file()) {
+        _update_counter();
         _eof = true;
         return Status::OK();
     } else if (!res.ok()) {
@@ -234,6 +236,34 @@ void PushBrokerReader::print_profile() {
     std::stringstream ss;
     _runtime_profile->pretty_print(&ss);
     LOG(INFO) << ss.str();
+}
+
+void PushBrokerReader::_init_counter() {
+    _scanner_total_timer = ADD_TIMER(_runtime_profile, "ScannerTotalTime");
+    {
+        static const char* prefix = "FileScanner";
+        ADD_COUNTER(_runtime_profile, prefix, TUnit::NONE);
+        RuntimeProfile* p = _runtime_profile;
+        _scanner_fill_timer = ADD_CHILD_TIMER(p, "FillTime", prefix);
+        _scanner_read_timer = ADD_CHILD_TIMER(p, "ReadTime", prefix);
+        _scanner_cast_chunk_timer = ADD_CHILD_TIMER(p, "CastChunkTime", prefix);
+        _scanner_materialize_timer = ADD_CHILD_TIMER(p, "MaterializeTime", prefix);
+        _scanner_init_chunk_timer = ADD_CHILD_TIMER(p, "CreateChunkTime", prefix);
+        _scanner_file_reader_timer = ADD_CHILD_TIMER(p, "FileReadTime", prefix);
+    }
+}
+
+void PushBrokerReader::_update_counter() {
+    _runtime_state->update_num_rows_load_filtered(_counter->num_rows_filtered);
+    _runtime_state->update_num_rows_load_unselected(_counter->num_rows_unselected);
+
+    COUNTER_UPDATE(_scanner_total_timer, _counter->total_ns);
+    COUNTER_UPDATE(_scanner_fill_timer, _counter->fill_ns);
+    COUNTER_UPDATE(_scanner_read_timer, _counter->read_batch_ns);
+    COUNTER_UPDATE(_scanner_cast_chunk_timer, _counter->cast_chunk_ns);
+    COUNTER_UPDATE(_scanner_materialize_timer, _counter->materialize_ns);
+    COUNTER_UPDATE(_scanner_init_chunk_timer, _counter->init_chunk_ns);
+    COUNTER_UPDATE(_scanner_file_reader_timer, _counter->file_read_ns);
 }
 
 } // namespace starrocks

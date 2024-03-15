@@ -54,6 +54,8 @@ private:
     ColumnPtr _build_object_column(const ColumnPtr& column);
     ColumnPtr _build_hll_column(const ColumnPtr& column);
     ColumnPtr _padding_char_column(const ColumnPtr& column, const SlotDescriptor* slot_desc, size_t num_rows);
+    void _init_counter();
+    void _update_counter();
 
     bool _ready = false;
     bool _eof = false;
@@ -62,5 +64,14 @@ private:
     TupleDescriptor* _tuple_desc = nullptr;
     std::unique_ptr<ScannerCounter> _counter;
     std::unique_ptr<FileScanner> _scanner;
+
+    // Profile information
+    RuntimeProfile::Counter* _scanner_total_timer = nullptr;
+    RuntimeProfile::Counter* _scanner_fill_timer = nullptr;
+    RuntimeProfile::Counter* _scanner_read_timer = nullptr;
+    RuntimeProfile::Counter* _scanner_cast_chunk_timer = nullptr;
+    RuntimeProfile::Counter* _scanner_materialize_timer = nullptr;
+    RuntimeProfile::Counter* _scanner_init_chunk_timer = nullptr;
+    RuntimeProfile::Counter* _scanner_file_reader_timer = nullptr;
 };
 } // namespace starrocks
