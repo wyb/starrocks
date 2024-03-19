@@ -84,6 +84,12 @@ Status ParquetReaderWrap::_init_parquet_reader() {
         * A DATETIME or TIMESTAMP value can include a trailing fractional seconds part in up to microseconds (6 digits) precision
         */
         arrow_reader_properties.set_coerce_int96_timestamp_unit(arrow::TimeUnit::MICRO);
+        arrow_reader_properties.set_use_threads(true);
+        arrow_reader_properties.set_pre_buffer(true);
+        auto cache_options = arrow::io::CacheOptions::LazyDefaults();
+        cache_options.hole_size_limit = config::io_coalesce_read_max_distance_size;
+        cache_options.range_size_limit = config::io_coalesce_read_max_buffer_size;
+        arrow_reader_properties.set_cache_options(cache_options);
 
         // new file reader for parquet file
         auto st = parquet::arrow::FileReader::Make(arrow::default_memory_pool(),
