@@ -22,10 +22,12 @@
 
 #include "common/config.h"
 #include "common/logging.h"
+#include "exec/file_scanner.h"
 #include "fmt/format.h"
 #include "parquet/schema.h"
 #include "parquet_schema_builder.h"
 #include "runtime/descriptors.h"
+#include "util/runtime_profile.h"
 
 namespace starrocks {
 // ====================================================================================================================
@@ -47,8 +49,8 @@ ParquetReaderWrap::ParquetReaderWrap(std::shared_ptr<arrow::io::RandomAccessFile
           _read_size(read_size) {
     _parquet = std::move(parquet_file);
     _properties = parquet::ReaderProperties();
-    _properties.enable_buffered_stream();
-    _properties.set_buffer_size(1 * 1024 * 1024);
+    //_properties.enable_buffered_stream();
+    //_properties.set_buffer_size(config::parquet_reader_buffer_size);
     _filename = (reinterpret_cast<ParquetChunkFile*>(_parquet.get()))->filename();
 }
 
@@ -84,7 +86,7 @@ Status ParquetReaderWrap::_init_parquet_reader() {
         * A DATETIME or TIMESTAMP value can include a trailing fractional seconds part in up to microseconds (6 digits) precision
         */
         arrow_reader_properties.set_coerce_int96_timestamp_unit(arrow::TimeUnit::MICRO);
-        arrow_reader_properties.set_use_threads(true);
+        //arrow_reader_properties.set_use_threads(true);
         arrow_reader_properties.set_pre_buffer(true);
         auto cache_options = arrow::io::CacheOptions::LazyDefaults();
         cache_options.hole_size_limit = config::io_coalesce_read_max_distance_size;
@@ -357,6 +359,10 @@ using ArrowStatus = ::arrow::Status;
 ParquetChunkFile::ParquetChunkFile(std::shared_ptr<starrocks::RandomAccessFile> file, uint64_t pos)
         : _file(std::move(file)), _pos(pos) {}
 
+ParquetChunkFile::ParquetChunkFile(std::shared_ptr<starrocks::RandomAccessFile> file, uint64_t pos,
+                                   ScannerCounter* counter)
+        : _file(std::move(file)), _pos(pos), _counter(counter) {}
+
 ParquetChunkFile::~ParquetChunkFile() {
     [[maybe_unused]] auto st = Close();
 }
@@ -375,6 +381,7 @@ arrow::Result<int64_t> ParquetChunkFile::Read(int64_t nbytes, void* buffer) {
 }
 
 arrow::Result<int64_t> ParquetChunkFile::ReadAt(int64_t position, int64_t nbytes, void* out) {
+    SCOPED_RAW_TIMER(&_counter->file_read_ns);
     _pos += nbytes;
     auto status = _file->read_at_fully(position, out, nbytes);
     return status.ok()

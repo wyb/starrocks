@@ -1256,4 +1256,7 @@ CONF_mInt32(olap_string_max_length, "1048576");
 // if mem_limit < 16 GB, disable JIT.
 // else it = min(mem_limit*0.01, 1GB)
 CONF_mInt64(jit_lru_cache_size, "0");
+
+CONF_mInt64(parquet_reader_buffer_size, "1048576");
+
 } // namespace starrocks::config
