@@ -1258,5 +1258,6 @@ CONF_mInt32(olap_string_max_length, "1048576");
 CONF_mInt64(jit_lru_cache_size, "0");
 
 CONF_mInt64(parquet_reader_buffer_size, "1048576");
+CONF_mBool(parquet_reader_use_threads, "false");
 
 } // namespace starrocks::config

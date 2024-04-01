@@ -89,12 +89,15 @@ Status ParquetReaderWrap::_init_parquet_reader() {
         */
         arrow_reader_properties.set_coerce_int96_timestamp_unit(arrow::TimeUnit::MICRO);
         if (config::io_coalesce_read_max_buffer_size > 0) {
-            //arrow_reader_properties.set_use_threads(true);
             arrow_reader_properties.set_pre_buffer(true);
             auto cache_options = arrow::io::CacheOptions::LazyDefaults();
             cache_options.hole_size_limit = config::io_coalesce_read_max_distance_size;
             cache_options.range_size_limit = config::io_coalesce_read_max_buffer_size;
             arrow_reader_properties.set_cache_options(cache_options);
+            arrow_reader_properties.set_batch_size(config::vector_chunk_size);
+            if (config::parquet_reader_use_threads) {
+                arrow_reader_properties.set_use_threads(true);
+            }
         }
 
         // new file reader for parquet file
@@ -389,6 +392,7 @@ arrow::Result<int64_t> ParquetChunkFile::ReadAt(int64_t position, int64_t nbytes
     SCOPED_RAW_TIMER(&_counter->file_read_ns);
     _pos += nbytes;
     auto status = _file->read_at_fully(position, out, nbytes);
+    LOG(INFO) << "xxx position: " << position << ", nbytes: " << nbytes;
     return status.ok()
                    ? nbytes
                    : arrow::Result<int64_t>(arrow::Status(arrow::StatusCode::IOError, std::string(status.message())));

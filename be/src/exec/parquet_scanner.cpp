@@ -402,6 +402,7 @@ StatusOr<ChunkPtr> ParquetScanner::get_next() {
         RETURN_IF_ERROR(initialize_src_chunk(&chunk));
     }
     RETURN_IF_ERROR(finalize_src_chunk(&chunk));
+    LOG(INFO) << "xxx columns: " << chunk->num_columns() << ", rows: " << chunk->num_rows();
     return std::move(chunk);
 }
 
