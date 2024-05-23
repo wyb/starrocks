@@ -270,6 +270,15 @@ Status KafkaDataConsumer::group_consume(TimedBlockingQueue<RdKafka::Message*>* q
             }
             break;
         }
+        case RdKafka::ERR_GROUP_AUTHORIZATION_FAILED: {
+            LOG(WARNING) << "kafka consume failed: " << _id << ", msg: " << msg->errstr();
+            done = true;
+            st = Status::InternalError(
+                    fmt::format("{} You should configure the routine load job with `property.group.id` property, "
+                                "and set the proper ACLs in your kafka cluster.",
+                                msg->errstr()));
+            break;
+        }
         default:
             LOG(WARNING) << "kafka consume failed: " << _id << ", msg: " << msg->errstr();
             done = true;
