@@ -66,6 +66,7 @@ import com.starrocks.common.ErrorReport;
 import com.starrocks.common.Pair;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.util.BrokerUtil;
+import com.starrocks.fs.FileSystem;
 import com.starrocks.fs.HdfsUtil;
 import com.starrocks.load.BrokerFileGroup;
 import com.starrocks.load.Load;
@@ -296,9 +297,8 @@ public class FileScanNode extends LoadScanNode {
             if (filePaths.size() == 0) {
                 throw new DdlException("filegroup number=" + fileGroups.size() + " is illegal");
             }
-            THdfsProperties hdfsProperties = new THdfsProperties();
-            HdfsUtil.getTProperties(filePaths.get(0), brokerDesc, hdfsProperties);
-            params.setHdfs_properties(hdfsProperties);
+            String path = filePaths.get(0);
+            params.setHdfs_properties(FileSystem.getFileSystem(path, brokerDesc.getProperties()).getHdfsProperties(path));
         }
         byte[] column_separator = fileGroup.getColumnSeparator().getBytes(StandardCharsets.UTF_8);
         byte[] row_delimiter = fileGroup.getRowDelimiter().getBytes(StandardCharsets.UTF_8);

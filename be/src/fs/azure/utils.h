@@ -12,27 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace cpp starrocks
-namespace java com.starrocks.thrift
+#pragma once
 
-enum TCloudType {
-    DEFAULT,
-    AWS,
-    AZURE,
-    GCP,
-    ALIYUN,
-    HDFS
-}
+#include <azure/core/http/http_status_code.hpp>
 
-// Deprecated
-struct TCloudProperty {
-    1: required string key;
-    2: required string value;
-}
+#include "common/status.h"
 
-struct TCloudConfiguration {
-    1: optional TCloudType cloud_type;
-    2: optional list<TCloudProperty> deprecated_cloud_properties; // Deprecated
-    3: optional map<string, string> cloud_properties;
-    4: optional bool azure_use_native_sdk;
-}
+namespace starrocks {
+
+const std::string kSchemeSeparator("://");
+const std::string kHttpScheme("http");
+const std::string kHttpsScheme("https");
+const std::string kWasbScheme("wasb");
+const std::string kWasbsScheme("wasbs");
+
+Status azure_error_to_status(Azure::Core::Http::HttpStatusCode code, std::string_view message, std::string_view object);
+
+} // namespace starrocks

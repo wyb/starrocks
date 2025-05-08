@@ -56,6 +56,12 @@ static const std::string ALIYUN_OSS_ACCESS_KEY = "aliyun.oss.access_key";
 static const std::string ALIYUN_OSS_SECRET_KEY = "aliyun.oss.secret_key";
 static const std::string ALIYUN_OSS_ENDPOINT = "aliyun.oss.endpoint";
 
+// Configuration for Azure
+// Currently only supported for Azure Blob Storage
+static const std::string AZURE_BLOB_SHARED_KEY = "azure.blob.shared_key";
+static const std::string AZURE_BLOB_SAS_TOKEN = "azure.blob.sas_token";
+static const std::string AZURE_BLOB_OAUTH2_CLIENT_ID = "azure.blob.oauth2_client_id";
+
 class CloudConfigurationFactory {
 public:
     static const AWSCloudConfiguration create_aws(const TCloudConfiguration& t_cloud_configuration) {
@@ -110,6 +116,25 @@ public:
 
         aliyun_cloud_configuration.aliyun_cloud_credential = aliyun_cloud_credential;
         return aliyun_cloud_configuration;
+    }
+
+    static const AzureCloudConfiguration create_azure(const TCloudConfiguration& t_cloud_configuration) {
+        DCHECK(t_cloud_configuration.__isset.cloud_type);
+        DCHECK(t_cloud_configuration.cloud_type == TCloudType::AZURE);
+        std::map<std::string, std::string> properties{};
+        if (t_cloud_configuration.__isset.cloud_properties) {
+            properties = t_cloud_configuration.cloud_properties;
+        }
+
+        AzureCloudConfiguration azure_cloud_configuration{};
+        AzureCloudCredential azure_cloud_credential{};
+
+        azure_cloud_credential.shared_key = get_or_default(properties, AZURE_BLOB_SHARED_KEY, std::string());
+        azure_cloud_credential.sas_token = get_or_default(properties, AZURE_BLOB_SAS_TOKEN, std::string());
+        azure_cloud_credential.client_id = get_or_default(properties, AZURE_BLOB_OAUTH2_CLIENT_ID, std::string());
+
+        azure_cloud_configuration.azure_cloud_credential = azure_cloud_credential;
+        return azure_cloud_configuration;
     }
 
 private:

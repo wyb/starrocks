@@ -12,27 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-namespace cpp starrocks
-namespace java com.starrocks.thrift
+#pragma once
 
-enum TCloudType {
-    DEFAULT,
-    AWS,
-    AZURE,
-    GCP,
-    ALIYUN,
-    HDFS
-}
+#include "fs/fs.h"
 
-// Deprecated
-struct TCloudProperty {
-    1: required string key;
-    2: required string value;
-}
+namespace starrocks {
 
-struct TCloudConfiguration {
-    1: optional TCloudType cloud_type;
-    2: optional list<TCloudProperty> deprecated_cloud_properties; // Deprecated
-    3: optional map<string, string> cloud_properties;
-    4: optional bool azure_use_native_sdk;
-}
+std::unique_ptr<FileSystem> new_fs_azblob(const FSOptions& options);
+
+} // namespace starrocks

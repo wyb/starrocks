@@ -2640,6 +2640,12 @@ public class Config extends ConfigBase {
     public static long star_mgr_meta_sync_interval_sec = 600L;
 
     /**
+     * az blob
+     */
+    @ConfField(mutable = true)
+    public static boolean azure_use_native_sdk = false;
+
+    /**
      * Whether allows delete shard meta if failes to delete actual data.
      * In extreme cases, actual data deletion might fail or timeout,
      * and if shard meta is not deleted, the FE memory will grow,
