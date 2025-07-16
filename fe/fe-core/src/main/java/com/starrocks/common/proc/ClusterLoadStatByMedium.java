@@ -18,21 +18,27 @@
 package com.starrocks.common.proc;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
+import com.starrocks.clone.TabletScheduler;
 import com.starrocks.common.AnalysisException;
+import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.thrift.TStorageMedium;
 
+// SHOW PROC "/cluster_balance/cluster_load_stat";
 public class ClusterLoadStatByMedium implements ProcDirInterface {
     public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>().add(
-            "StorageMedium").build();
+            "StorageMedium").add("ClusterDiskBalanceStat").build();
+
+    private final TabletScheduler tabletScheduler;
+
+    public ClusterLoadStatByMedium() {
+        tabletScheduler = GlobalStateMgr.getCurrentState().getTabletScheduler();
+    }
 
     @Override
     public ProcResult fetchResult() throws AnalysisException {
         BaseProcResult result = new BaseProcResult();
         result.setNames(TITLE_NAMES);
-        for (TStorageMedium medium : TStorageMedium.values()) {
-            result.addRow(Lists.newArrayList(medium.name()));
-        }
+        result.setRows(tabletScheduler.getClusterLoadStats());
         return result;
     }
 
@@ -43,7 +49,7 @@ public class ClusterLoadStatByMedium implements ProcDirInterface {
 
     @Override
     public ProcNodeInterface lookup(String name) throws AnalysisException {
-        for (TStorageMedium medium : TStorageMedium.values()) {
+        for (TStorageMedium medium : tabletScheduler.getStorageMediums()) {
             if (name.equalsIgnoreCase(medium.name())) {
                 return new ClusterLoadStatisticProcDir(medium);
             }

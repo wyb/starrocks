@@ -41,6 +41,7 @@ import com.starrocks.common.Pair;
 import com.starrocks.common.util.concurrent.lock.LockType;
 import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.LocalMetastore;
 import com.starrocks.server.RunMode;
 import com.starrocks.system.Backend;
 import com.starrocks.system.ComputeNode;
@@ -2196,5 +2197,94 @@ public class DiskAndTabletLoadReBalancer extends Rebalancer {
                 }
             }
         }
+    }
+
+    private void getDiskBalanceTypes(Set<Pair<TStorageMedium, BalanceType>> mediumBalanceTypes) {
+        ClusterLoadStatistic clusterLoadStat = getClusterLoadStatistic();
+        if (clusterLoadStat == null) {
+            return;
+        }
+
+        for (Map.Entry<TStorageMedium, BalanceStat> entry : clusterLoadStat.getClusterDiskBalanceStats().entrySet()) {
+            BalanceStat balanceStat = entry.getValue();
+            if (!balanceStat.isBalanced()) {
+                mediumBalanceTypes.add(Pair.create(entry.getKey(), balanceStat.getBalanceType()));
+            }
+        }
+
+        for (Map.Entry<Pair<TStorageMedium, Long>, BalanceStat> entry : clusterLoadStat.getBackendDiskBalanceStats().entrySet()) {
+            BalanceStat balanceStat = entry.getValue();
+            if (!balanceStat.isBalanced()) {
+                mediumBalanceTypes.add(Pair.create(entry.getKey().first, balanceStat.getBalanceType()));
+            }
+        }
+    }
+
+    private void getTabletBalanceTypes(Set<Pair<TStorageMedium, BalanceType>> mediumBalanceTypes) {
+        GlobalStateMgr globalStateMgr = GlobalStateMgr.getCurrentState();
+        LocalMetastore localMetastore = globalStateMgr.getLocalMetastore();
+
+        List<Long> dbIds = localMetastore.getDbIdsIncludeRecycleBin();
+        for (Long dbId : dbIds) {
+            Database db = localMetastore.getDbIncludeRecycleBin(dbId);
+            if (db == null) {
+                continue;
+            }
+
+            if (db.isSystemDatabase()) {
+                continue;
+            }
+
+            Locker locker = new Locker();
+            locker.lockDatabase(db.getId(), LockType.READ);
+            try {
+                for (Table table : globalStateMgr.getLocalMetastore().getTablesIncludeRecycleBin(db)) {
+                    if (!table.isOlapTableOrMaterializedView()) {
+                        continue;
+                    }
+
+                    OlapTable olapTbl = (OlapTable) table;
+                    // Table not in NORMAL state is not allowed to do balance,
+                    // because the change of tablet location can cause Schema change or rollup failed
+                    if (olapTbl.getState() != OlapTable.OlapTableState.NORMAL) {
+                        continue;
+                    }
+
+                    for (Partition partition : localMetastore.getAllPartitionsIncludeRecycleBin(olapTbl)) {
+                        if (partition.getState() != PartitionState.NORMAL) {
+                            // when alter job is in FINISHING state, partition state will be set to NORMAL,
+                            // and we can schedule the tablets in it.
+                            continue;
+                        }
+
+                        DataProperty dataProperty = localMetastore.getDataPropertyIncludeRecycleBin(
+                                olapTbl.getPartitionInfo(), partition.getId());
+                        if (dataProperty == null) {
+                            continue;
+                        }
+                        TStorageMedium medium = dataProperty.getStorageMedium();
+
+                        for (PhysicalPartition physicalPartition : partition.getSubPartitions()) {
+                            for (MaterializedIndex idx : physicalPartition.getMaterializedIndices(
+                                    MaterializedIndex.IndexExtState.VISIBLE)) {
+                                if (!idx.isTabletBalanced()) {
+                                    mediumBalanceTypes.add(Pair.create(medium, idx.getBalanceType()));
+                                }
+                            }
+                        }
+                    }
+                }
+            } finally {
+                locker.unLockDatabase(db.getId(), LockType.READ);
+            }
+        }
+    }
+
+    @Override
+    public Set<Pair<TStorageMedium, BalanceType>> getClusterBalanceTypes() {
+        Set<Pair<TStorageMedium, BalanceType>> mediumBalanceTypes = Sets.newHashSet();
+        getDiskBalanceTypes(mediumBalanceTypes);
+        getTabletBalanceTypes(mediumBalanceTypes);
+        return mediumBalanceTypes;
     }
 }

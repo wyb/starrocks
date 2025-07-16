@@ -60,6 +60,7 @@ import com.starrocks.catalog.Replica.ReplicaState;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Tablet;
 import com.starrocks.catalog.TabletMeta;
+import com.starrocks.clone.BalanceStat.BalanceType;
 import com.starrocks.clone.SchedException.Status;
 import com.starrocks.clone.TabletSchedCtx.Priority;
 import com.starrocks.clone.TabletSchedCtx.Type;
@@ -89,6 +90,7 @@ import com.starrocks.thrift.TFinishTaskRequest;
 import com.starrocks.thrift.TGetTabletScheduleRequest;
 import com.starrocks.thrift.TGetTabletScheduleResponse;
 import com.starrocks.thrift.TStatusCode;
+import com.starrocks.thrift.TStorageMedium;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -1981,6 +1983,39 @@ public class TabletScheduler extends FrontendDaemon {
         }
     }
 
+    public Set<TStorageMedium> getStorageMediums() {
+        ClusterLoadStatistic clusterLoadStat = getClusterLoadStatistic();
+        return clusterLoadStat == null ? Sets.newHashSet() : clusterLoadStat.getStorageMediums();
+    }
+
+    public List<List<String>> getClusterBalanceStats() {
+        Set<Pair<TStorageMedium, BalanceType>> mediumBalanceTypes = rebalancer.getClusterBalanceTypes();
+        Set<TStorageMedium> storageMediums = getStorageMediums();
+        List<List<String>> stats = Lists.newArrayList();
+
+        for (TStorageMedium medium : storageMediums) {
+            for (BalanceType type : BalanceType.values()) {
+                long pendingTabletNum = getBalancePendingTabletNum(medium, type);
+                long runningTabletNum = getBalanceRunningTabletNum(medium, type);
+                boolean isBalanced = !mediumBalanceTypes.contains(Pair.create(medium, type));
+                stats.add(Lists.newArrayList(medium.name(), type.label(), String.valueOf(isBalanced),
+                        String.valueOf(pendingTabletNum), String.valueOf(runningTabletNum)));
+            }
+        }
+
+        return stats;
+    }
+
+    public List<List<String>> getClusterLoadStats() {
+        ClusterLoadStatistic clusterLoadStat = getClusterLoadStatistic();
+        return clusterLoadStat == null ? Lists.newArrayList() : clusterLoadStat.getClusterLoadStats();
+    }
+
+    public List<List<String>> getBackendLoadStats(TStorageMedium medium) {
+        ClusterLoadStatistic clusterLoadStat = getClusterLoadStatistic();
+        return clusterLoadStat == null ? Lists.newArrayList() : clusterLoadStat.getBackendLoadStats(medium);
+    }
+
     public List<List<String>> getPendingTabletsInfo(int limit) {
         List<TabletSchedCtx> tabletCtxs = getCopiedTablets(pendingTablets, limit);
         return collectTabletCtx(tabletCtxs);
@@ -2040,6 +2075,18 @@ public class TabletScheduler extends FrontendDaemon {
     public synchronized long getBalanceTabletsNumber() {
         return pendingTablets.stream().filter(t -> t.getType() == Type.BALANCE).count()
                 + runningTablets.values().stream().filter(t -> t.getType() == Type.BALANCE).count();
+    }
+
+    private synchronized long getBalancePendingTabletNum(TStorageMedium medium, BalanceStat.BalanceType balanceType) {
+        return pendingTablets.stream()
+                .filter(t -> t.getStorageMedium() == medium && t.getType() == Type.BALANCE && t.getBalanceType() == balanceType)
+                .count();
+    }
+
+    private synchronized long getBalanceRunningTabletNum(TStorageMedium medium, BalanceStat.BalanceType balanceType) {
+        return runningTablets.values().stream()
+                .filter(t -> t.getStorageMedium() == medium && t.getType() == Type.BALANCE && t.getBalanceType() == balanceType)
+                .count();
     }
 
     public TGetTabletScheduleResponse getTabletSchedule(TGetTabletScheduleRequest request) {

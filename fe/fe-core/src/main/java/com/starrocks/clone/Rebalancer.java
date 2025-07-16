@@ -35,12 +35,15 @@
 package com.starrocks.clone;
 
 import com.google.common.collect.Lists;
+import com.starrocks.clone.BalanceStat.BalanceType;
 import com.starrocks.clone.TabletScheduler.PathSlot;
+import com.starrocks.common.Pair;
 import com.starrocks.task.AgentBatchTask;
 import com.starrocks.thrift.TStorageMedium;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 /*
@@ -102,4 +105,9 @@ public abstract class Rebalancer {
     public void updateLoadStatistic(ClusterLoadStatistic loadStatistic) {
         this.loadStatistic.set(loadStatistic);
     }
+
+    // For show proc
+    // Get cluster balance types within each storage medium, includes both disk usage and tablet distribution types.
+    // If cluster is balanced, returns empty set.
+    public abstract Set<Pair<TStorageMedium, BalanceType>> getClusterBalanceTypes();
 }
