@@ -414,15 +414,18 @@ public class TabletChecker extends FrontendDaemon {
         if (physicalPartition != null) {
             for (MaterializedIndex idx : physicalPartition.getMaterializedIndices(
                     IndexExtState.VISIBLE)) {
+                BalanceStat balanceStat = BalanceStat.BALANCED_STAT;
                 for (Tablet tablet : idx.getTablets()) {
                     LocalTablet localTablet = (LocalTablet) tablet;
                     partitionTabletCheckerStat.totalTabletNum++;
 
-                    if (tabletScheduler.containsTablet(tablet.getId())) {
+                    long tabletId = tablet.getId();
+                    if (tabletScheduler.containsTablet(tabletId)) {
                         partitionTabletCheckerStat.tabletInScheduler++;
                         continue;
                     }
 
+                    Multimap<String, String> locations = olapTbl.getLocation();
                     SystemInfoService systemInfoService = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo();
                     Pair<TabletHealthStatus, TabletSchedCtx.Priority> statusWithPrio =
                             TabletChecker.getTabletHealthStatusWithPriority(
@@ -431,7 +434,7 @@ public class TabletChecker extends FrontendDaemon {
                                     physicalPartition.getVisibleVersion(),
                                     replicaNum,
                                     aliveBeIdsInCluster,
-                                    olapTbl.getLocation());
+                                    locations);
 
                     if (statusWithPrio.first == TabletHealthStatus.HEALTHY) {
                         // Only set last status check time when status is healthy.
@@ -449,21 +452,25 @@ public class TabletChecker extends FrontendDaemon {
                         continue;
                     }
 
-                    if (statusWithPrio.first == TabletHealthStatus.LOCATION_MISMATCH &&
-                            !preCheckEnoughLocationMatchedBackends(olapTbl.getLocation(), replicaNum)) {
-                        continue;
+                    if (statusWithPrio.first == TabletHealthStatus.LOCATION_MISMATCH) {
+                        if (balanceStat.isBalanced()) {
+                            balanceStat = BalanceStat.createLabelLocationBalanceStat(tabletId, locations, locations);
+                        }
+                        if (!preCheckEnoughLocationMatchedBackends(locations, replicaNum)) {
+                            continue;
+                        }
                     }
 
                     TabletSchedCtx tabletSchedCtx = new TabletSchedCtx(
                             TabletSchedCtx.Type.REPAIR,
                             db.getId(), olapTbl.getId(),
-                            physicalPartition.getId(), idx.getId(), tablet.getId(),
+                            physicalPartition.getId(), idx.getId(), tabletId,
                             System.currentTimeMillis());
                     // the tablet status will be set again when being scheduled
                     tabletSchedCtx.setTabletStatus(statusWithPrio.first);
                     tabletSchedCtx.setOrigPriority(statusWithPrio.second);
                     tabletSchedCtx.setTablet(localTablet);
-                    tabletSchedCtx.setRequiredLocation(olapTbl.getLocation());
+                    tabletSchedCtx.setRequiredLocation(locations);
                     tabletSchedCtx.setReplicaNum(replicaNum);
                     if (!tryChooseSrcBeforeSchedule(tabletSchedCtx)) {
                         continue;
@@ -477,6 +484,9 @@ public class TabletChecker extends FrontendDaemon {
                         partitionTabletCheckerStat.addToSchedulerTabletNum++;
                     }
                 }
+
+                // set balance stat in materialized index
+                idx.setBalanceStat(balanceStat);
             } // indices
         }
 
