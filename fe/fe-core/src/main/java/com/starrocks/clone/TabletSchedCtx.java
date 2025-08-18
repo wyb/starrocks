@@ -702,7 +702,7 @@ public class TabletSchedCtx implements Comparable<TabletSchedCtx> {
         }
 
         if (chosenReplica == null) {
-            throw new SchedException(Status.UNRECOVERABLE, "unable to choose dest replica(maybe no incomplete replica");
+            throw new SchedException(Status.UNRECOVERABLE, "unable to choose dest replica(maybe no incomplete replica)");
         }
 
         // check if the dest replica has available slot
