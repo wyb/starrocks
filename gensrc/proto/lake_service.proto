@@ -359,6 +359,18 @@ message VacuumFullResponse {
     optional int64 vacuumed_file_size = 3;
 }
 
+message GetTabletMetadatasRequest {
+    repeated int64 tablet_ids = 1;
+    optional int64 max_version = 2;
+    optional int64 min_version = 3;
+}
+
+message GetTabletMetadatasResponse {
+    optional StatusPB status = 1;
+    // tablet id -> <version -> tablet metadata>
+    map<int64, map<int64, TabletMetadataPB>> tablet_metadatas = 2;
+}
+
 service LakeService {
     rpc publish_version(PublishVersionRequest) returns (PublishVersionResponse);
     rpc aggregate_publish_version(AggregatePublishVersionRequest) returns (PublishVersionResponse);
@@ -379,5 +391,6 @@ service LakeService {
     rpc vacuum(VacuumRequest) returns (VacuumResponse);
     rpc vacuum_full(VacuumFullRequest) returns (VacuumFullResponse);
     rpc aggregate_compact(AggregateCompactRequest) returns (CompactResponse);
+    rpc get_tablet_metadatas(GetTabletMetadatasRequest) returns (GetTabletMetadatasResponse);
 }
 

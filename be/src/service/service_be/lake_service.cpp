@@ -25,6 +25,8 @@
 #include "exec/write_combined_txn_log.h"
 #include "fs/fs_util.h"
 #include "gutil/strings/join.h"
+#include "gutil/strings/util.h"
+#include "butil/strings/string_number_conversions.h"
 #include "runtime/exec_env.h"
 #include "runtime/lake_snapshot_loader.h"
 #include "runtime/load_channel_mgr.h"
@@ -1370,6 +1372,80 @@ void LakeServiceImpl::vacuum_full(::google::protobuf::RpcController* controller,
         LOG(WARNING) << "Fail to submit vacuum task: " << st;
         st.to_protobuf(response->mutable_status());
         latch.count_down();
+    }
+
+    latch.wait();
+}
+
+void LakeServiceImpl::get_tablet_metadatas(::google::protobuf::RpcController* controller,
+                                           const ::starrocks::GetTabletMetadatasRequest* request,
+                                           ::starrocks::GetTabletMetadatasResponse* response,
+                                           ::google::protobuf::Closure* done) {
+    brpc::ClosureGuard guard(done);
+    auto cntl = static_cast<brpc::Controller*>(controller);
+
+    if (request->tablet_ids_size() == 0) {
+        cntl->SetFailed("missing tablet_ids");
+        return;
+    }
+    if (!request->has_max_version()) {
+        cntl->SetFailed("missing max_version");
+        return;
+    }
+    if (!request->has_min_version()) {
+        cntl->SetFailed("missing min_version");
+        return;
+    }
+
+    auto thread_pool = get_tablet_stats_thread_pool(_env);
+    if (UNLIKELY(thread_pool == nullptr)) {
+        cntl->SetFailed("thread pool is null");
+        return;
+    }
+
+    auto latch = BThreadCountDownLatch(request->tablet_ids_size());
+    bthread::Mutex response_mtx;
+
+    for (int64_t tablet_id : request->tablet_ids()) {
+        auto task = std::make_shared<CancellableRunnable>(
+                [&, tablet_id] {
+                    DeferOp defer([&] { latch.count_down(); });
+
+                    int64_t max_version = request->max_version();
+                    int64_t min_version = request->min_version();
+
+                    std::vector<std::pair<int64_t, TabletMetadataPtr>> versioned_metadatas;
+
+                    for (int64_t version = max_version; version >= min_version; --version) {
+                        // Don't fill meta cache to avoid polluting the cache
+                        lake::CacheOptions cache_opts{.fill_meta_cache = false};
+                        auto tablet_metadata_or = _tablet_mgr->get_tablet_metadata(tablet_id, version, cache_opts);
+                        if (tablet_metadata_or.ok()) {
+                            versioned_metadatas.emplace_back(version, std::move(tablet_metadata_or).value());
+                        } else {
+                            VLOG(2) << "Metadata for tablet " << tablet_id << " version " << version
+                                    << " not found or failed to retrieve: " << tablet_metadata_or.status();
+                        }
+                    }
+
+                    if (!versioned_metadatas.empty()) {
+                        std::lock_guard l(response_mtx);
+                        auto& version_to_metadata = (*response->mutable_tablet_metadatas())[tablet_id];
+                        for (const auto& [version, metadata] : versioned_metadatas) {
+                            version_to_metadata[version].CopyFrom(*metadata);
+                        }
+                    }
+                },
+                [&] {
+                    LOG(WARNING) << "get tablet metadatas task has been cancelled for tablet " << tablet_id;
+                    latch.count_down();
+                });
+
+        auto st = thread_pool->submit(std::move(task));
+        if (!st.ok()) {
+            LOG(WARNING) << "Fail to submit get tablet metadatas task for tablet " << tablet_id << ": " << st;
+            latch.count_down();
+        }
     }
 
     latch.wait();
