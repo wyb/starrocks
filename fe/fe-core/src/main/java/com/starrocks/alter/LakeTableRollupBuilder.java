@@ -54,14 +54,16 @@ public class LakeTableRollupBuilder extends AlterJobV2Builder {
          * create all rollup indexes. and set state.
          * After setting, Tables' state will be ROLLUP
          */
-        int baseSchemaHash = olapTable.getSchemaHashByIndexMetaId(baseIndexId);
+        int baseSchemaHash = olapTable.getSchemaHashByIndexMetaId(baseIndexMetaId);
         // mvSchemaVersion will keep same with the src MaterializedIndex
-        int mvSchemaVersion = olapTable.getIndexMetaByIndexId(baseIndexId).getSchemaVersion();
+        int mvSchemaVersion = olapTable.getIndexMetaByMetaId(baseIndexMetaId).getSchemaVersion();
         int mvSchemaHash = Util.schemaHash(0 /* init schema version */, rollupColumns, olapTable.getBfColumnNames(),
                 olapTable.getBfFpp());
+        // initially, index id and index meta id are the same
+        long rollupIndexId = rollupIndexMetaId;
 
         AlterJobV2 mvJob = new LakeRollupJob(jobId, dbId, olapTable.getId(), olapTable.getName(), timeoutMs,
-                baseIndexId, rollupIndexId, baseIndexName, rollupIndexName, mvSchemaVersion,
+                baseIndexMetaId, rollupIndexMetaId, baseIndexName, rollupIndexName, mvSchemaVersion,
                 rollupColumns, whereClause, baseSchemaHash, mvSchemaHash,
                 rollupKeysType, rollupShortKeyColumnCount, origStmt, viewDefineSql, isColocateMVIndex);
         mvJob.setComputeResource(computeResource);
@@ -71,19 +73,19 @@ public class LakeTableRollupBuilder extends AlterJobV2Builder {
             TStorageMedium medium = olapTable.getPartitionInfo().getDataProperty(partitionId).getStorageMedium();
             // create shard group
             long shardGroupId = GlobalStateMgr.getCurrentState().getStarOSAgent().
-                        createShardGroup(dbId, olapTable.getId(), partitionId, rollupIndexId);
+                        createShardGroup(dbId, olapTable.getId(), partitionId, rollupIndexMetaId);
             for (PhysicalPartition physicalPartition : partition.getSubPartitions()) {
                 long physicalPartitionId = physicalPartition.getId();
                 // index state is SHADOW
                 MaterializedIndex mvIndex = new MaterializedIndex(rollupIndexId,
                         MaterializedIndex.IndexState.SHADOW, shardGroupId);
-                MaterializedIndex baseIndex = physicalPartition.getIndex(baseIndexId);
+                MaterializedIndex baseIndex = physicalPartition.getIndex(baseIndexMetaId);
 
                 // create shard
                 Map<String, String> shardProperties = new HashMap<>();
                 shardProperties.put(LakeTablet.PROPERTY_KEY_TABLE_ID, Long.toString(olapTable.getId()));
                 shardProperties.put(LakeTablet.PROPERTY_KEY_PARTITION_ID, Long.toString(physicalPartitionId));
-                shardProperties.put(LakeTablet.PROPERTY_KEY_INDEX_ID, Long.toString(rollupIndexId));
+                shardProperties.put(LakeTablet.PROPERTY_KEY_INDEX_ID, Long.toString(rollupIndexMetaId));
 
                 List<Tablet> originTablets = baseIndex.getTablets();
                 final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
@@ -113,7 +115,7 @@ public class LakeTableRollupBuilder extends AlterJobV2Builder {
 
                 mvJob.addMVIndex(physicalPartitionId, mvIndex);
                 LOG.debug("create materialized view index {} based on index {} in partition {}:{}",
-                        rollupIndexId, baseIndexId, partitionId, physicalPartitionId);
+                        rollupIndexMetaId, baseIndexMetaId, partitionId, physicalPartitionId);
             } // end for baseTablets
         }
         return mvJob;

@@ -406,6 +406,8 @@ public class SparkLoadJobTest {
 
                 index.getId();
                 result = indexId;
+                index.getMetaId();
+                result = indexId;
                 index.getTablets();
                 result = Lists.newArrayList(tablet);
                 tablet.getId();
@@ -508,6 +510,8 @@ public class SparkLoadJobTest {
                 result = Lists.newArrayList(index);
 
                 index.getId();
+                result = indexId;
+                index.getMetaId();
                 result = indexId;
 
                 index.getTablets();
