@@ -85,7 +85,7 @@ public class LakeTableAlterJobV2Builder extends AlterJobV2Builder {
                 Map<String, String> properties = new HashMap<>();
                 properties.put(LakeTablet.PROPERTY_KEY_TABLE_ID, Long.toString(table.getId()));
                 properties.put(LakeTablet.PROPERTY_KEY_PARTITION_ID, Long.toString(physicalPartitionId));
-                properties.put(LakeTablet.PROPERTY_KEY_INDEX_ID, Long.toString(shadowIndexMetaId));
+                properties.put(LakeTablet.PROPERTY_KEY_INDEX_ID, Long.toString(shadowIndexId));
                 List<Long> shadowTabletIds = createShards(originTablets.size(),
                         table.getPartitionFilePathInfo(physicalPartitionId),
                         table.getPartitionFileCacheInfo(physicalPartitionId), shardGroupId,

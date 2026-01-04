@@ -450,9 +450,9 @@ public class SparkLoadJobTest {
         Map<Long, Set<Long>> tableToLoadPartitions = Deencapsulation.getField(job, "tableToLoadPartitions");
         Assertions.assertTrue(tableToLoadPartitions.containsKey(tableId));
         Assertions.assertTrue(tableToLoadPartitions.get(tableId).contains(physicalPartitionId));
-        Map<Long, Integer> indexToSchemaHash = Deencapsulation.getField(job, "indexToSchemaHash");
-        Assertions.assertTrue(indexToSchemaHash.containsKey(indexId));
-        Assertions.assertEquals(schemaHash, (long) indexToSchemaHash.get(indexId));
+        Map<Long, Integer> indexMetaIdToSchemaHash = Deencapsulation.getField(job, "indexMetaIdToSchemaHash");
+        Assertions.assertTrue(indexMetaIdToSchemaHash.containsKey(indexId));
+        Assertions.assertEquals(schemaHash, (long) indexMetaIdToSchemaHash.get(indexId));
 
         // finish push task
         job.addFinishedReplica(replicaId, tabletId, backendId);
@@ -547,9 +547,9 @@ public class SparkLoadJobTest {
         Map<Long, Set<Long>> tableToLoadPartitions = Deencapsulation.getField(job, "tableToLoadPartitions");
         Assertions.assertTrue(tableToLoadPartitions.containsKey(tableId));
         Assertions.assertTrue(tableToLoadPartitions.get(tableId).contains(physicalPartitionId));
-        Map<Long, Integer> indexToSchemaHash = Deencapsulation.getField(job, "indexToSchemaHash");
-        Assertions.assertTrue(indexToSchemaHash.containsKey(indexId));
-        Assertions.assertEquals(schemaHash, (long) indexToSchemaHash.get(indexId));
+        Map<Long, Integer> indexMetaIdToSchemaHash = Deencapsulation.getField(job, "indexMetaIdToSchemaHash");
+        Assertions.assertTrue(indexMetaIdToSchemaHash.containsKey(indexId));
+        Assertions.assertEquals(schemaHash, (long) indexMetaIdToSchemaHash.get(indexId));
 
         // finish push task
         job.addFinishedReplica(tableId, tabletId, backendId);

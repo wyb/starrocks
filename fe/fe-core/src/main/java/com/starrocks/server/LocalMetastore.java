@@ -2067,7 +2067,7 @@ public class LocalMetastore implements ConnectorMetadata, MVRepairHandler, Memor
         Map<String, String> properties = new HashMap<>();
         properties.put(LakeTablet.PROPERTY_KEY_TABLE_ID, Long.toString(table.getId()));
         properties.put(LakeTablet.PROPERTY_KEY_PARTITION_ID, Long.toString(physicalPartitionId));
-        properties.put(LakeTablet.PROPERTY_KEY_INDEX_ID, Long.toString(index.getMetaId()));
+        properties.put(LakeTablet.PROPERTY_KEY_INDEX_ID, Long.toString(index.getId()));
         int bucketNum = distributionInfo.getBucketNum();
         final long warehouseId = computeResource.getWarehouseId();
         final WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
