@@ -1076,7 +1076,7 @@ public class LakeTableSchemaChangeJob extends LakeTableSchemaChangeJobBase {
                 }
 
                 physicalPartition.visualiseShadowIndex(
-                        shadowIdxMetaId, originIdxMetaId == physicalPartition.getBaseIndex().getId());
+                        shadowIdxMetaId, originIdxMetaId == physicalPartition.getBaseIndex().getMetaId());
 
                 // the origin tablet created by old schema can be deleted from FE metadata
                 for (Tablet originTablet : droppedIdx.getTablets()) {

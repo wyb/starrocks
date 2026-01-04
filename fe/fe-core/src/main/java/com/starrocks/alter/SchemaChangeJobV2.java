@@ -948,7 +948,7 @@ public class SchemaChangeJobV2 extends AlterJobV2 {
                     }
 
                     physicalPartition.visualiseShadowIndex(
-                            shadowIdxMetaId, originIdxMetaId == physicalPartition.getBaseIndex().getId());
+                            shadowIdxMetaId, originIdxMetaId == physicalPartition.getBaseIndex().getMetaId());
 
                     // the origin tablet created by old schema can be deleted from FE meta data
                     for (Tablet originTablet : droppedIdx.getTablets()) {
