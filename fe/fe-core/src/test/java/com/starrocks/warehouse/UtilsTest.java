@@ -53,13 +53,14 @@ public class UtilsTest {
     @Test
     public void testGetUserDefaultWarehouse() throws Exception {
         Assertions.assertEquals(Optional.empty(), Utils.getUserDefaultWarehouse(null));
-        Assertions.assertEquals(Optional.empty(), Utils.getUserDefaultWarehouse(""));
-        Assertions.assertEquals(Optional.empty(), Utils.getUserDefaultWarehouse("non_exist_user"));
+        Assertions.assertEquals(Optional.empty(), Utils.getUserDefaultWarehouse(new UserIdentity("", "%")));
+        Assertions.assertEquals(Optional.empty(), Utils.getUserDefaultWarehouse(new UserIdentity("non_exist_user", "%")));
+        Assertions.assertEquals(Optional.empty(), Utils.getUserDefaultWarehouse(new UserIdentity(true, "ephemeral_user", "%")));
 
         // Test user without warehouse
         String userName = "test_user_no_wh";
         createUser("CREATE USER '" + userName + "' IDENTIFIED BY ''");
-        Assertions.assertEquals(Optional.empty(), Utils.getUserDefaultWarehouse(userName));
+        Assertions.assertEquals(Optional.empty(), Utils.getUserDefaultWarehouse(new UserIdentity(userName, "%")));
 
         // Test user with warehouse
         String userWithWh = "test_user_with_wh";
@@ -69,7 +70,7 @@ public class UtilsTest {
         StatementBase stmt = UtFrameUtils.parseStmtWithNewParser(setPropSql, ctx);
         DDLStmtExecutor.execute(stmt, ctx);
 
-        Optional<String> wh = Utils.getUserDefaultWarehouse(userWithWh);
+        Optional<String> wh = Utils.getUserDefaultWarehouse(new UserIdentity(userWithWh, "%"));
         Assertions.assertTrue(wh.isPresent());
         Assertions.assertEquals("default_warehouse", wh.get());
     }

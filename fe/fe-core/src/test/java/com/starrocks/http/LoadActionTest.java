@@ -16,6 +16,7 @@ package com.starrocks.http;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.collect.Lists;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.common.proc.ProcResult;
@@ -100,7 +101,7 @@ public class LoadActionTest extends StarRocksHttpTestCase {
         new MockUp<BatchWriteMgr>() {
             @Mock
             public RequestCoordinatorBackendResult requestCoordinatorBackends(
-                    TableId tableId, StreamLoadKvParams params, String user) {
+                    TableId tableId, StreamLoadKvParams params, UserIdentity userIdentity) {
                 return new RequestCoordinatorBackendResult(new TStatus(TStatusCode.OK), computeNodes);
             }
         };
@@ -121,7 +122,7 @@ public class LoadActionTest extends StarRocksHttpTestCase {
         new MockUp<BatchWriteMgr>() {
             @Mock
             public RequestCoordinatorBackendResult requestCoordinatorBackends(
-                    TableId tableId, StreamLoadKvParams params, String user) {
+                    TableId tableId, StreamLoadKvParams params, UserIdentity userIdentity) {
                 TStatus status = new TStatus();
                 status.setStatus_code(TStatusCode.INTERNAL_ERROR);
                 status.addToError_msgs("artificial failure");
@@ -569,7 +570,7 @@ public class LoadActionTest extends StarRocksHttpTestCase {
 
         new MockUp<Utils>() {
             @Mock
-            public Optional<String> getUserDefaultWarehouse(String user) {
+            public Optional<String> getUserDefaultWarehouse(UserIdentity userIdentity) {
                 return Optional.of("user_wh");
             }
         };

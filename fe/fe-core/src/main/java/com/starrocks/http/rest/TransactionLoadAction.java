@@ -337,8 +337,8 @@ public class TransactionLoadAction extends RestBaseAction {
             warehouseName = request.getRequest().headers().get(WAREHOUSE_KEY);
         } else {
             ConnectContext ctx = request.getConnectContext();
-            if (ctx != null && ctx.getCurrentUserIdentity() != null) {
-                Optional<String> userWarehouseName = Utils.getUserDefaultWarehouse(ctx.getCurrentUserIdentity().getUser());
+            if (ctx != null) {
+                Optional<String> userWarehouseName = Utils.getUserDefaultWarehouse(ctx.getCurrentUserIdentity());
                 if (userWarehouseName.isPresent() &&
                         GlobalStateMgr.getCurrentState().getWarehouseMgr().warehouseExists(userWarehouseName.get())) {
                     warehouseName = userWarehouseName.get();

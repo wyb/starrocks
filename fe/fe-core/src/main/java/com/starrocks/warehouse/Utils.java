@@ -15,7 +15,6 @@
 package com.starrocks.warehouse;
 
 import com.google.common.base.Strings;
-import com.starrocks.authentication.AuthenticationMgr;
 import com.starrocks.authentication.UserProperty;
 import com.starrocks.catalog.UserIdentity;
 import com.starrocks.qe.SessionVariable;
@@ -32,20 +31,21 @@ public class Utils {
     private Utils() {
     }
 
-    public static Optional<String> getUserDefaultWarehouse(String user) {
+    public static Optional<String> getUserDefaultWarehouse(UserIdentity userIdentity) {
+        if (userIdentity == null || userIdentity.isEphemeral()) {
+            return Optional.empty();
+        }
+
+        String user = userIdentity.getUser();
         if (Strings.isNullOrEmpty(user)) {
             return Optional.empty();
         }
 
-        AuthenticationMgr mgr = GlobalStateMgr.getCurrentState().getAuthenticationMgr();
         try {
-            UserIdentity userIdentity = mgr.getUserIdentityByName(user);
-            if (!userIdentity.isEphemeral()) {
-                UserProperty userProperty = mgr.getUserProperty(user);
-                String userWarehouse = userProperty.getSessionVariables().get(SessionVariable.WAREHOUSE_NAME);
-                if (!Strings.isNullOrEmpty(userWarehouse)) {
-                    return Optional.of(userWarehouse);
-                }
+            UserProperty userProperty = GlobalStateMgr.getCurrentState().getAuthenticationMgr().getUserProperty(user);
+            String userWarehouse = userProperty.getSessionVariables().get(SessionVariable.WAREHOUSE_NAME);
+            if (!Strings.isNullOrEmpty(userWarehouse)) {
+                return Optional.of(userWarehouse);
             }
         } catch (SemanticException e) {
             LOG.warn("Failed to get user property. user: {}", user, e);

@@ -14,6 +14,7 @@
 
 package com.starrocks.load.batchwrite;
 
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.common.proc.ProcResult;
@@ -75,7 +76,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
                 put(HTTP_BATCH_WRITE_PARALLEL, "1");
             }});
         RequestCoordinatorBackendResult result1 =
-                batchWriteMgr.requestCoordinatorBackends(tableId1, params1, "root");
+                batchWriteMgr.requestCoordinatorBackends(tableId1, params1, UserIdentity.ROOT);
         assertTrue(result1.isOk());
         assertEquals(1, result1.getValue().size());
         assertEquals(1, batchWriteMgr.numJobs());
@@ -86,7 +87,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
                 put(HTTP_BATCH_WRITE_PARALLEL, "1");
             }});
         RequestCoordinatorBackendResult result2 =
-                batchWriteMgr.requestCoordinatorBackends(tableId1, params2, "root");
+                batchWriteMgr.requestCoordinatorBackends(tableId1, params2, UserIdentity.ROOT);
         assertTrue(result2.isOk());
         assertEquals(1, result2.getValue().size());
         assertEquals(2, batchWriteMgr.numJobs());
@@ -96,7 +97,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
                 put(HTTP_BATCH_WRITE_PARALLEL, "4");
             }});
         RequestCoordinatorBackendResult result3 =
-                batchWriteMgr.requestCoordinatorBackends(tableId2, params3, "root");
+                batchWriteMgr.requestCoordinatorBackends(tableId2, params3, UserIdentity.ROOT);
         assertTrue(result3.isOk());
         assertEquals(4, result3.getValue().size());
         assertEquals(3, batchWriteMgr.numJobs());
@@ -106,7 +107,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
                 put(HTTP_BATCH_WRITE_PARALLEL, "4");
             }});
         RequestCoordinatorBackendResult result4 =
-                batchWriteMgr.requestCoordinatorBackends(tableId3, params4, "root");
+                batchWriteMgr.requestCoordinatorBackends(tableId3, params4, UserIdentity.ROOT);
         assertTrue(result4.isOk());
         assertEquals(4, result4.getValue().size());
         assertEquals(4, batchWriteMgr.numJobs());
@@ -119,13 +120,13 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
                 put(HTTP_BATCH_WRITE_PARALLEL, "4");
             }});
         RequestLoadResult result1 = batchWriteMgr.requestLoad(
-                tableId4, params, "root", allNodes.get(0).getId(), allNodes.get(0).getHost());
+                tableId4, params, UserIdentity.ROOT, allNodes.get(0).getId(), allNodes.get(0).getHost());
         assertTrue(result1.isOk());
         assertNotNull(result1.getValue());
         assertEquals(1, batchWriteMgr.numJobs());
 
         RequestLoadResult result2 = batchWriteMgr.requestLoad(
-                tableId4, params, "root", allNodes.get(0).getId(), allNodes.get(0).getHost());
+                tableId4, params, UserIdentity.ROOT, allNodes.get(0).getId(), allNodes.get(0).getHost());
         assertTrue(result2.isOk());
         assertEquals(result1.getValue(), result2.getValue());
         assertEquals(1, batchWriteMgr.numJobs());
@@ -135,7 +136,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
     public void testCheckParameters() {
         StreamLoadKvParams params1 = new StreamLoadKvParams(new HashMap<>());
         RequestCoordinatorBackendResult result1 =
-                batchWriteMgr.requestCoordinatorBackends(tableId1, params1, "root");
+                batchWriteMgr.requestCoordinatorBackends(tableId1, params1, UserIdentity.ROOT);
         assertFalse(result1.isOk());
         assertEquals(TStatusCode.INVALID_ARGUMENT, result1.getStatus().getStatus_code());
         assertEquals(0, batchWriteMgr.numJobs());
@@ -144,7 +145,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
                 put(HTTP_BATCH_WRITE_INTERVAL_MS, "10000");
             }});
         RequestCoordinatorBackendResult result2 =
-                batchWriteMgr.requestCoordinatorBackends(tableId2, params2, "root");
+                batchWriteMgr.requestCoordinatorBackends(tableId2, params2, UserIdentity.ROOT);
         assertFalse(result2.isOk());
         assertEquals(TStatusCode.INVALID_ARGUMENT, result2.getStatus().getStatus_code());
         assertEquals(0, batchWriteMgr.numJobs());
@@ -155,7 +156,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
                 put(HTTP_WAREHOUSE, "no_exist");
             }});
         RequestCoordinatorBackendResult result3 =
-                batchWriteMgr.requestCoordinatorBackends(tableId3, params3, "root");
+                batchWriteMgr.requestCoordinatorBackends(tableId3, params3, UserIdentity.ROOT);
         assertFalse(result3.isOk());
         assertEquals(TStatusCode.INVALID_ARGUMENT, result3.getStatus().getStatus_code());
         assertEquals(0, batchWriteMgr.numJobs());
@@ -167,7 +168,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
                 put(HTTP_BATCH_WRITE_INTERVAL_MS, "10000");
                 put(HTTP_BATCH_WRITE_PARALLEL, "4");
             }});
-        RequestCoordinatorBackendResult result1 = batchWriteMgr.requestCoordinatorBackends(tableId1, params1, "root");
+        RequestCoordinatorBackendResult result1 = batchWriteMgr.requestCoordinatorBackends(tableId1, params1, UserIdentity.ROOT);
         assertTrue(result1.isOk());
         assertEquals(1, batchWriteMgr.numJobs());
 
@@ -176,7 +177,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
                 put(HTTP_BATCH_WRITE_PARALLEL, "4");
             }});
         RequestLoadResult result2 = batchWriteMgr.requestLoad(
-                tableId4, params2, "root", allNodes.get(0).getId(), allNodes.get(0).getHost());
+                tableId4, params2, UserIdentity.ROOT, allNodes.get(0).getId(), allNodes.get(0).getHost());
         assertTrue(result2.isOk());
         assertEquals(2, batchWriteMgr.numJobs());
 
@@ -204,7 +205,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
                 result = new Exception("registerBatchWrite failed");
             }
         };
-        RequestCoordinatorBackendResult result = batchWriteMgr.requestCoordinatorBackends(tableId1, params1, "root");
+        RequestCoordinatorBackendResult result = batchWriteMgr.requestCoordinatorBackends(tableId1, params1, UserIdentity.ROOT);
         assertEquals(TStatusCode.INTERNAL_ERROR, result.getStatus().getStatus_code());
         assertEquals(0, batchWriteMgr.numJobs());
     }
@@ -216,7 +217,7 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
 
         new MockUp<Utils>() {
             @Mock
-            public Optional<String> getUserDefaultWarehouse(String user) {
+            public Optional<String> getUserDefaultWarehouse(UserIdentity userIdentity) {
                 return Optional.of(warehouse);
             }
         };
@@ -316,7 +317,8 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
             }
         });
 
-        RequestCoordinatorBackendResult result = batchWriteMgr.requestCoordinatorBackends(tableId1, params, user);
+        RequestCoordinatorBackendResult result = batchWriteMgr.requestCoordinatorBackends(
+                tableId1, params, new UserIdentity(user, "%"));
         assertTrue(result.isOk());
         ConcurrentHashMap<BatchWriteId, MergeCommitJob> jobs = Deencapsulation.getField(batchWriteMgr, "mergeCommitJobs");
         assertEquals(1, jobs.size());

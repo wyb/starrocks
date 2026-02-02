@@ -18,6 +18,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableMap;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DiskInfo;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.proc.ProcResult;
@@ -576,7 +577,7 @@ public class TransactionLoadActionTest extends StarRocksHttpTestCase {
 
             new MockUp<Utils>() {
                 @Mock
-                public Optional<String> getUserDefaultWarehouse(String user) {
+                public Optional<String> getUserDefaultWarehouse(UserIdentity userIdentity) {
                     return Optional.of("user_wh");
                 }
             };

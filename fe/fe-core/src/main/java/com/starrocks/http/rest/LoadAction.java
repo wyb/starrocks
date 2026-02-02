@@ -37,6 +37,7 @@ package com.starrocks.http.rest;
 import com.google.common.base.Strings;
 import com.starrocks.authorization.AccessDeniedException;
 import com.starrocks.authorization.PrivilegeType;
+import com.starrocks.catalog.UserIdentity;
 import com.starrocks.common.DdlException;
 import com.starrocks.http.ActionController;
 import com.starrocks.http.BaseRequest;
@@ -196,8 +197,8 @@ public class LoadAction extends RestBaseAction {
             warehouseName = request.getRequest().headers().get(WAREHOUSE_KEY);
         } else {
             ConnectContext ctx = request.getConnectContext();
-            if (ctx != null && ctx.getCurrentUserIdentity() != null) {
-                Optional<String> userWarehouseName = Utils.getUserDefaultWarehouse(ctx.getCurrentUserIdentity().getUser());
+            if (ctx != null) {
+                Optional<String> userWarehouseName = Utils.getUserDefaultWarehouse(ctx.getCurrentUserIdentity());
                 if (userWarehouseName.isPresent() && warehouseManager.warehouseExists(userWarehouseName.get())) {
                     warehouseName = userWarehouseName.get();
                 }
@@ -224,9 +225,10 @@ public class LoadAction extends RestBaseAction {
             BaseRequest request, BaseResponse response, String dbName, String tableName) throws DdlException {
         TableId tableId = new TableId(dbName, tableName);
         StreamLoadKvParams params = StreamLoadKvParams.fromHttpHeaders(request.getRequest().headers());
-        String user = Optional.ofNullable(request.getConnectContext()).map(ConnectContext::getQualifiedUser).orElse("");
-        RequestCoordinatorBackendResult result = GlobalStateMgr.getCurrentState()
-                .getBatchWriteMgr().requestCoordinatorBackends(tableId, params, user);
+        ConnectContext ctx = request.getConnectContext();
+        UserIdentity userIdentity = ctx != null ? ctx.getCurrentUserIdentity() : null;
+        RequestCoordinatorBackendResult result = GlobalStateMgr.getCurrentState().getBatchWriteMgr().requestCoordinatorBackends(
+                tableId, params, userIdentity);
         if (!result.isOk()) {
             BatchWriteResponseResult responseResult = new BatchWriteResponseResult(
                     result.getStatus().status_code.name(), ActionStatus.FAILED,
