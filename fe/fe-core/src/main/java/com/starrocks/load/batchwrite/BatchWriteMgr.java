@@ -169,9 +169,6 @@ public class BatchWriteMgr extends FrontendDaemon {
     private Pair<TStatus, MergeCommitJob> getOrCreateJob(TableId tableId, StreamLoadKvParams params, UserIdentity userIdentity) {
         BatchWriteId uniqueId = new BatchWriteId(tableId, params);
         MergeCommitJob load = mergeCommitJobs.get(uniqueId);
-        if (load != null) {
-            return new Pair<>(new TStatus(TStatusCode.OK), load);
-        }
 
         String warehouseName = params.getWarehouse().orElse(null);
         if (warehouseName == null) {
@@ -180,10 +177,23 @@ public class BatchWriteMgr extends FrontendDaemon {
             if (userWarehouseName.isPresent() &&
                     GlobalStateMgr.getCurrentState().getWarehouseMgr().warehouseExists(userWarehouseName.get())) {
                 warehouseName = userWarehouseName.get();
+                // Check job warehouse name and user default warehouse name
+                if (load != null && !warehouseName.equals(load.getWarehouseName())) {
+                    TStatus status = new TStatus();
+                    status.setStatus_code(TStatusCode.INVALID_ARGUMENT);
+                    status.setError_msgs(Collections.singletonList(String.format(
+                            "Job warehouse %s does not match the request user default warehouse %s",
+                            load.getWarehouseName(), warehouseName)));
+                    return new Pair<>(status, null);
+                }
             }
         }
         if (warehouseName == null) {
             warehouseName = DEFAULT_WAREHOUSE_NAME;
+        }
+
+        if (load != null) {
+            return new Pair<>(new TStatus(TStatusCode.OK), load);
         }
 
         StreamLoadInfo streamLoadInfo;

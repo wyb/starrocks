@@ -325,4 +325,128 @@ public class BatchWriteMgrTest extends BatchWriteTestBase {
         MergeCommitJob job = jobs.values().iterator().next();
         assertEquals(warehouse, Deencapsulation.getField(job, "warehouseName"));
     }
+
+    @Test
+    public void testRequestMergeCommitWithUserWarehouseMismatch() {
+        String user = "user1";
+        String warehouse1 = "warehouse_1";
+        String warehouse2 = "warehouse_2";
+
+        new MockUp<Utils>() {
+            private int count = 0;
+
+            @Mock
+            public Optional<String> getUserDefaultWarehouse(UserIdentity userIdentity) {
+                if (count == 0) {
+                    count++;
+                    return Optional.of(warehouse1);
+                }
+                return Optional.of(warehouse2);
+            }
+        };
+
+        new MockUp<WarehouseManager>() {
+            @Mock
+            public boolean warehouseExists(String name) {
+                return true;
+            }
+
+            @Mock
+            public Warehouse getWarehouse(String warehouseName) {
+                return new Warehouse(1L, warehouseName, "wyb") {
+                    @Override
+                    public long getResumeTime() {
+                        return 0L;
+                    }
+
+                    @Override
+                    public Long getAnyWorkerGroupId() {
+                        return 0L;
+                    }
+
+                    @Override
+                    public void addNodeToCNGroup(ComputeNode node, String cnGroupName) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void validateRemoveNodeFromCNGroup(ComputeNode node, String cnGroupName) throws DdlException {
+
+                    }
+
+                    @Override
+                    public List<Long> getWorkerGroupIds() {
+                        return List.of();
+                    }
+
+                    @Override
+                    public List<String> getWarehouseInfo() {
+                        return List.of();
+                    }
+
+                    @Override
+                    public List<List<String>> getWarehouseNodesInfo() {
+                        return List.of();
+                    }
+
+                    @Override
+                    public ProcResult fetchResult() {
+                        return null;
+                    }
+
+                    @Override
+                    public void createCNGroup(CreateCnGroupStmt stmt) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void dropCNGroup(DropCnGroupStmt stmt) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void enableCNGroup(EnableDisableCnGroupStmt stmt) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void disableCNGroup(EnableDisableCnGroupStmt stmt) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void alterCNGroup(AlterCnGroupStmt stmt) throws DdlException {
+
+                    }
+
+                    @Override
+                    public void replayInternalOpLog(String payload) {
+
+                    }
+
+                    @Override
+                    public boolean isAvailable() {
+                        return true;
+                    }
+                };
+            }
+        };
+
+        StreamLoadKvParams params = new StreamLoadKvParams(new HashMap<>() {
+            {
+                put(HTTP_BATCH_WRITE_INTERVAL_MS, "1000");
+                put(HTTP_BATCH_WRITE_PARALLEL, "1");
+            }
+        });
+
+        RequestCoordinatorBackendResult result = batchWriteMgr.requestCoordinatorBackends(
+                tableId1, params, new UserIdentity(user, "%"));
+        assertTrue(result.isOk());
+
+        RequestCoordinatorBackendResult result2 = batchWriteMgr.requestCoordinatorBackends(
+                tableId1, params, new UserIdentity(user, "%"));
+        assertFalse(result2.isOk());
+        assertEquals(TStatusCode.INVALID_ARGUMENT, result2.getStatus().getStatus_code());
+        assertTrue(result2.getStatus().getError_msgs().get(0).contains("does not match"));
+    }
 }
