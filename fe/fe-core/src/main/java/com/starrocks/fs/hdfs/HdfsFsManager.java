@@ -23,6 +23,7 @@ import com.google.common.collect.Lists;
 import com.starrocks.common.Config;
 import com.starrocks.common.NotImplementedException;
 import com.starrocks.common.StarRocksException;
+import com.starrocks.common.ThreadPoolManager;
 import com.starrocks.connector.share.credential.CloudConfigurationConstants;
 import com.starrocks.credential.CloudConfiguration;
 import com.starrocks.credential.CloudConfigurationFactory;
@@ -61,8 +62,13 @@ import java.util.Optional;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 class ConfigurationWrap extends Configuration {
@@ -355,6 +361,24 @@ public class HdfsFsManager {
     protected static final String FS_TOS_REGION = "fs.tos.region";
 
     private final ScheduledExecutorService handleManagementPool = Executors.newScheduledThreadPool(1);
+
+    // Timeout in seconds for closing a single filesystem.
+    // If close takes longer the task is cancelled via interrupt.
+    private long fileSystemCloseTimeoutSecs = 60L;
+
+    // Dedicated thread pool for asynchronous filesystem close.
+    // Keeps the management/checker thread free and allows a watchdog timeout per close.
+    private final ExecutorService fileSystemClosePool = createFileSystemClosePool();
+
+    private static ThreadPoolExecutor createFileSystemClosePool() {
+        ThreadPoolExecutor pool = ThreadPoolManager.newDaemonThreadPool(
+                5, 5, 60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(1024),
+                new ThreadPoolExecutor.AbortPolicy(),
+                "hdfs-fs-close", true);
+        pool.allowCoreThreadTimeOut(true);
+        return pool;
+    }
 
     private int readBufferSize = 128 << 10; // 128k
     private int writeBufferSize = 128 << 10; // 128k
@@ -1624,24 +1648,68 @@ public class HdfsFsManager {
         @Override
         public void run() {
             try {
+                int expireSeconds = Config.hdfs_file_system_expire_seconds;
                 for (HdfsFs fileSystem : cachedFileSystem.values()) {
-                    if (fileSystem.isExpired(Config.hdfs_file_system_expire_seconds)) {
-                        LOG.info("file system " + fileSystem + " is expired, close and remove it");
-                        fileSystem.getLock().lock();
-                        try {
-                            fileSystem.closeFileSystem();
-                        } catch (Throwable t) {
-                            LOG.error("errors while close file system", t);
-                        } finally {
-                            cachedFileSystem.remove(fileSystem.getIdentity());
-                            fileSystem.getLock().unlock();
+                    if (fileSystem.isExpired(expireSeconds)) {
+                        // Atomically remove this exact instance so that:
+                        // 1. New requests immediately see a missing entry and create a fresh instance
+                        //    without waiting for the (potentially hung) close — eliminating lock contention.
+                        // 2. Only one thread ever submits a close for this instance, even if two
+                        //    checker runs overlap.
+                        if (cachedFileSystem.remove(fileSystem.getIdentity(), fileSystem)) {
+                            LOG.info("file system {} is expired, removing from cache and closing asynchronously",
+                                    fileSystem);
+                            closeAsync(fileSystem);
                         }
                     }
                 }
             } finally {
-                HdfsFsManager.this.handleManagementPool.schedule(this, 60, TimeUnit.SECONDS);
+                if (!HdfsFsManager.this.handleManagementPool.isShutdown()) {
+                    HdfsFsManager.this.handleManagementPool.schedule(this, 60, TimeUnit.SECONDS);
+                }
             }
         }
+    }
 
+    private void closeAsync(HdfsFs fileSystem) {
+        Future<?> future;
+        try {
+            future = fileSystemClosePool.submit(() -> {
+                try {
+                    fileSystem.closeFileSystem();
+                } catch (Throwable t) {
+                    LOG.error("errors while closing file system {}", fileSystem, t);
+                } finally {
+                    // Clear the interrupt flag so it does not leak to the next task run on this thread.
+                    Thread.interrupted();
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            // Pool is saturated; spawn a one-off daemon thread instead of closing on the
+            // caller (checker) thread, so the checker is never blocked by a hung close.
+            LOG.warn("close pool is full, spawning daemon thread to close file system {}", fileSystem);
+            Thread t = new Thread(() -> {
+                try {
+                    fileSystem.closeFileSystem();
+                } catch (Throwable ex) {
+                    LOG.error("errors while closing file system {}", fileSystem, ex);
+                }
+            }, "hdfs-fs-close-fallback");
+            t.setDaemon(true);
+            t.start();
+            return;
+        }
+
+        // Schedule a watchdog: if close is still running after the timeout,
+        // send an interrupt to unblock any interrupt-sensitive I/O inside the close path.
+        if (!handleManagementPool.isShutdown()) {
+            handleManagementPool.schedule(() -> {
+                if (!future.isDone()) {
+                    LOG.warn("closing file system {} timed out after {}s, cancelling",
+                            fileSystem, fileSystemCloseTimeoutSecs);
+                    future.cancel(true);
+                }
+            }, fileSystemCloseTimeoutSecs, TimeUnit.SECONDS);
+        }
     }
 }
