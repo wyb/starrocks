@@ -394,6 +394,34 @@ public class HdfsFsManager {
         handleManagementPool.schedule(new FileSystemExpirationChecker(), 0, TimeUnit.SECONDS);
     }
 
+    private static final int MAX_CACHE_ACQUIRE_RETRIES = 3;
+
+    /**
+     * Retrieves or creates a cached HdfsFs for the given identity, retrying if the entry is
+     * concurrently evicted by the expiration checker.
+     * <p>
+     * On success the returned HdfsFs has its lock held — the caller MUST release it in a
+     * finally block.
+     */
+    private HdfsFs acquireCachedFileSystem(HdfsFsIdentity identity) throws StarRocksException {
+        for (int attempt = 0; attempt < MAX_CACHE_ACQUIRE_RETRIES; attempt++) {
+            cachedFileSystem.putIfAbsent(identity, new HdfsFs(identity));
+            HdfsFs fileSystem = cachedFileSystem.get(identity);
+            if (fileSystem == null) {
+                // Entry was removed by checker between putIfAbsent and get — retry.
+                continue;
+            }
+            fileSystem.getLock().lock();
+            if (cachedFileSystem.containsKey(identity)) {
+                return fileSystem; // lock held
+            }
+            // Entry was evicted while we waited for the lock — unlock and retry.
+            fileSystem.getLock().unlock();
+        }
+        throw new StarRocksException(
+                "Failed to acquire cached file system for " + identity + " after " + MAX_CACHE_ACQUIRE_RETRIES + " retries");
+    }
+
     private static void convertHDFSConfToProperties(Configuration conf, THdfsProperties tProperties) {
         ((HDFSConfigurationWrap) conf).convertHDFSConfToProperties(tProperties);
     }
@@ -554,19 +582,8 @@ public class HdfsFsManager {
 
         String hdfsUgi = username + "," + password;
         HdfsFsIdentity fileSystemIdentity = new HdfsFsIdentity(host, hdfsUgi);
-        cachedFileSystem.putIfAbsent(fileSystemIdentity, new HdfsFs(fileSystemIdentity));
-        HdfsFs fileSystem = cachedFileSystem.get(fileSystemIdentity);
-        if (fileSystem == null) {
-            // it means it is removed concurrently by checker thread
-            return null;
-        }
-        fileSystem.getLock().lock();
+        HdfsFs fileSystem = acquireCachedFileSystem(fileSystemIdentity);
         try {
-            if (!cachedFileSystem.containsKey(fileSystemIdentity)) {
-                // this means the file system is closed by file system checker thread
-                // it is a corner case
-                return null;
-            }
             if (fileSystem.getDFSFileSystem() == null) {
                 LOG.info("could not find file system for path " + path + " create a new one");
                 // create a new filesystem
@@ -642,19 +659,8 @@ public class HdfsFsManager {
         String s3aUgi = accessKey + "," + secretKey;
         HdfsFsIdentity fileSystemIdentity = new HdfsFsIdentity(host, s3aUgi);
 
-        cachedFileSystem.putIfAbsent(fileSystemIdentity, new HdfsFs(fileSystemIdentity));
-        HdfsFs fileSystem = cachedFileSystem.get(fileSystemIdentity);
-        if (fileSystem == null) {
-            // it means it is removed concurrently by checker thread
-            return null;
-        }
-        fileSystem.getLock().lock();
+        HdfsFs fileSystem = acquireCachedFileSystem(fileSystemIdentity);
         try {
-            if (!cachedFileSystem.containsKey(fileSystemIdentity)) {
-                // this means the file system is closed by file system checker thread
-                // it is a corner case
-                return null;
-            }
             if (fileSystem.getDFSFileSystem() == null) {
                 LOG.info("could not find file system for path " + path + " create a new one");
                 // create a new filesystem
@@ -746,19 +752,8 @@ public class HdfsFsManager {
         String uriIdentity = scheme + "://" + authority;
         HdfsFsIdentity fileSystemIdentity = new HdfsFsIdentity(uriIdentity, cloudConfiguration.toConfString());
 
-        cachedFileSystem.putIfAbsent(fileSystemIdentity, new HdfsFs(fileSystemIdentity));
-        HdfsFs fileSystem = cachedFileSystem.get(fileSystemIdentity);
-        if (fileSystem == null) {
-            // it means it is removed concurrently by checker thread
-            return null;
-        }
-        fileSystem.getLock().lock();
+        HdfsFs fileSystem = acquireCachedFileSystem(fileSystemIdentity);
         try {
-            if (!cachedFileSystem.containsKey(fileSystemIdentity)) {
-                // this means the file system is closed by file system checker thread
-                // it is a corner case
-                return null;
-            }
             if (fileSystem.getDFSFileSystem() == null) {
                 LOG.info("could not find file system for path " + path + " create a new one");
                 // create a new filesystem
@@ -839,19 +834,8 @@ public class HdfsFsManager {
         String host = KS3_SCHEME + "://" + endpoint + "/" + pathUri.getUri().getHost();
         String ks3aUgi = accessKey + "," + secretKey;
         HdfsFsIdentity fileSystemIdentity = new HdfsFsIdentity(host, ks3aUgi);
-        cachedFileSystem.putIfAbsent(fileSystemIdentity, new HdfsFs(fileSystemIdentity));
-        HdfsFs fileSystem = cachedFileSystem.get(fileSystemIdentity);
-        if (fileSystem == null) {
-            // it means it is removed concurrently by checker thread
-            return null;
-        }
-        fileSystem.getLock().lock();
+        HdfsFs fileSystem = acquireCachedFileSystem(fileSystemIdentity);
         try {
-            if (!cachedFileSystem.containsKey(fileSystemIdentity)) {
-                // this means the file system is closed by file system checker thread
-                // it is a corner case
-                return null;
-            }
             if (fileSystem.getDFSFileSystem() == null) {
                 LOG.info("could not find file system for path " + path + " create a new one");
                 // create a new filesystem
@@ -915,21 +899,8 @@ public class HdfsFsManager {
         String obsUgi = accessKey + "," + secretKey;
 
         HdfsFsIdentity fileSystemIdentity = new HdfsFsIdentity(host, obsUgi);
-        cachedFileSystem.putIfAbsent(fileSystemIdentity, new HdfsFs(fileSystemIdentity));
-        HdfsFs fileSystem = cachedFileSystem.get(fileSystemIdentity);
-
-        if (fileSystem == null) {
-            // it means it is removed concurrently by checker thread
-            return null;
-        }
-        fileSystem.getLock().lock();
+        HdfsFs fileSystem = acquireCachedFileSystem(fileSystemIdentity);
         try {
-            if (!cachedFileSystem.containsKey(fileSystemIdentity)) {
-                // this means the file system is closed by file system checker thread
-                // it is a corner case
-                return null;
-            }
-
             if (fileSystem.getDFSFileSystem() == null) {
                 LOG.info("could not find file system for path " + path + " create a new one");
                 // create a new filesystem
@@ -1000,21 +971,8 @@ public class HdfsFsManager {
         }
 
         HdfsFsIdentity fileSystemIdentity = new HdfsFsIdentity(host, "");
-        cachedFileSystem.putIfAbsent(fileSystemIdentity, new HdfsFs(fileSystemIdentity));
-        HdfsFs fileSystem = cachedFileSystem.get(fileSystemIdentity);
-
-        if (fileSystem == null) {
-            // it means it is removed concurrently by checker thread
-            return null;
-        }
-        fileSystem.getLock().lock();
+        HdfsFs fileSystem = acquireCachedFileSystem(fileSystemIdentity);
         try {
-            if (!cachedFileSystem.containsKey(fileSystemIdentity)) {
-                // this means the file system is closed by file system checker thread
-                // it is a corner case
-                return null;
-            }
-
             if (fileSystem.getDFSFileSystem() == null) {
                 LOG.info("could not find file system for path " + path + " create a new one");
                 // create a new filesystem
@@ -1069,19 +1027,8 @@ public class HdfsFsManager {
         String host = OSS_SCHEME + "://" + endpoint + "/" + pathUri.getUri().getHost();
         String ossUgi = accessKey + "," + secretKey;
         HdfsFsIdentity fileSystemIdentity = new HdfsFsIdentity(host, ossUgi);
-        cachedFileSystem.putIfAbsent(fileSystemIdentity, new HdfsFs(fileSystemIdentity));
-        HdfsFs fileSystem = cachedFileSystem.get(fileSystemIdentity);
-        if (fileSystem == null) {
-            // it means it is removed concurrently by checker thread
-            return null;
-        }
-        fileSystem.getLock().lock();
+        HdfsFs fileSystem = acquireCachedFileSystem(fileSystemIdentity);
         try {
-            if (!cachedFileSystem.containsKey(fileSystemIdentity)) {
-                // this means the file system is closed by file system checker thread
-                // it is a corner case
-                return null;
-            }
             if (fileSystem.getDFSFileSystem() == null) {
                 LOG.info("could not find file system for path " + path + " create a new one");
                 // create a new filesystem
@@ -1146,19 +1093,8 @@ public class HdfsFsManager {
         String host = COS_SCHEME + "://" + endpoint + "/" + pathUri.getUri().getHost();
         String cosUgi = accessKey + "," + secretKey;
         HdfsFsIdentity fileSystemIdentity = new HdfsFsIdentity(host, cosUgi);
-        cachedFileSystem.putIfAbsent(fileSystemIdentity, new HdfsFs(fileSystemIdentity));
-        HdfsFs fileSystem = cachedFileSystem.get(fileSystemIdentity);
-        if (fileSystem == null) {
-            // it means it is removed concurrently by checker thread
-            return null;
-        }
-        fileSystem.getLock().lock();
+        HdfsFs fileSystem = acquireCachedFileSystem(fileSystemIdentity);
         try {
-            if (!cachedFileSystem.containsKey(fileSystemIdentity)) {
-                // this means the file system is closed by file system checker thread
-                // it is a corner case
-                return null;
-            }
             if (fileSystem.getDFSFileSystem() == null) {
                 LOG.info("could not find file system for path " + path + " create a new one");
                 // create a new filesystem
@@ -1236,19 +1172,8 @@ public class HdfsFsManager {
         String host = TOS_SCHEME + "://" + endpoint + "/" + pathUri.getUri().getHost();
         String tosUgi = accessKey + "," + secretKey;
         HdfsFsIdentity fileSystemIdentity = new HdfsFsIdentity(host, tosUgi);
-        cachedFileSystem.putIfAbsent(fileSystemIdentity, new HdfsFs(fileSystemIdentity));
-        HdfsFs fileSystem = cachedFileSystem.get(fileSystemIdentity);
-        if (fileSystem == null) {
-            // it means it is removed concurrently by checker thread
-            return null;
-        }
-        fileSystem.getLock().lock();
+        HdfsFs fileSystem = acquireCachedFileSystem(fileSystemIdentity);
         try {
-            if (!cachedFileSystem.containsKey(fileSystemIdentity)) {
-                // this means the file system is closed by file system checker thread
-                // it is a corner case
-                return null;
-            }
             if (fileSystem.getDFSFileSystem() == null) {
                 LOG.info("could not find file system for path " + path + " create a new one");
                 // create a new filesystem
@@ -1697,6 +1622,17 @@ public class HdfsFsManager {
             }, "hdfs-fs-close-fallback");
             t.setDaemon(true);
             t.start();
+            // Schedule a watchdog for the fallback thread too — interrupt it if close hangs
+            // so we don't accumulate stuck threads when the pool is already saturated.
+            if (!handleManagementPool.isShutdown()) {
+                handleManagementPool.schedule(() -> {
+                    if (t.isAlive()) {
+                        LOG.warn("fallback close of file system {} timed out after {}s, interrupting",
+                                fileSystem, fileSystemCloseTimeoutSecs);
+                        t.interrupt();
+                    }
+                }, fileSystemCloseTimeoutSecs, TimeUnit.SECONDS);
+            }
             return;
         }
 

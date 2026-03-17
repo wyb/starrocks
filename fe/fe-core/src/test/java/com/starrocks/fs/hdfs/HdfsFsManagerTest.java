@@ -15,16 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package com.starrocks.fs;
+package com.starrocks.fs.hdfs;
 
 import com.google.common.collect.Maps;
 import com.starrocks.common.Pair;
 import com.starrocks.common.StarRocksException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.connector.share.credential.CloudConfigurationConstants;
-import com.starrocks.fs.hdfs.HdfsFs;
-import com.starrocks.fs.hdfs.HdfsFsIdentity;
-import com.starrocks.fs.hdfs.HdfsFsManager;
 import com.starrocks.thrift.THdfsProperties;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -439,6 +436,58 @@ public class HdfsFsManagerTest {
     }
 
     /**
+     * Concurrent eviction: acquireCachedFileSystem retries when the checker removes
+     * an entry between putIfAbsent and the containsKey check, so callers never see null.
+     */
+    @Test
+    public void testAcquireCachedFileSystemRetriesOnConcurrentEviction() throws Exception {
+        HdfsFsManager mgr = new HdfsFsManager();
+        ConcurrentHashMap<HdfsFsIdentity, HdfsFs> cache = getCachedFileSystem(mgr);
+
+        HdfsFsIdentity id = new HdfsFsIdentity("hdfs://retry-host", "user");
+
+        // Put an entry, then immediately remove it so the first get() returns null,
+        // simulating the checker evicting between putIfAbsent and get.
+        // acquireCachedFileSystem should retry and succeed on the second attempt.
+
+        // Access acquireCachedFileSystem via reflection
+        java.lang.reflect.Method acquire = HdfsFsManager.class.getDeclaredMethod(
+                "acquireCachedFileSystem", HdfsFsIdentity.class);
+        acquire.setAccessible(true);
+
+        // Normal case: entry stays in cache, acquire succeeds and returns with lock held
+        HdfsFs result = (HdfsFs) acquire.invoke(mgr, id);
+        assertNotNull(result, "acquireCachedFileSystem should return non-null");
+        Assertions.assertTrue(result.getLock().isHeldByCurrentThread());
+        result.getLock().unlock();
+
+        // Eviction case: remove the entry after acquire puts it, forcing a retry.
+        // We do this by clearing the cache right before calling acquire — the first
+        // putIfAbsent creates an entry, but we have a thread that removes it immediately.
+        cache.clear();
+        CountDownLatch evictOnce = new CountDownLatch(1);
+        Thread evictor = new Thread(() -> {
+            // Busy-wait for an entry to appear, then remove it once
+            while (evictOnce.getCount() > 0) {
+                for (HdfsFsIdentity key : cache.keySet()) {
+                    if (cache.remove(key) != null) {
+                        evictOnce.countDown();
+                        return;
+                    }
+                }
+            }
+        });
+        evictor.start();
+
+        // acquire should retry after the eviction and succeed
+        HdfsFs retryResult = (HdfsFs) acquire.invoke(mgr, id);
+        assertNotNull(retryResult, "acquireCachedFileSystem should retry and succeed after eviction");
+        Assertions.assertTrue(retryResult.getLock().isHeldByCurrentThread());
+        retryResult.getLock().unlock();
+        evictor.join(2000);
+    }
+
+    /**
      * Pool-full (RejectedExecutionException): filesystem is still closed on a fallback
      * daemon thread so resources are not leaked and the checker thread is not blocked.
      */
@@ -463,5 +512,50 @@ public class HdfsFsManagerTest {
         Assertions.assertFalse(cache.containsKey(id));
         // Closed on a fallback daemon thread
         Mockito.verify(fs, Mockito.timeout(2000).times(1)).closeFileSystem();
+    }
+
+    /**
+     * Fallback thread watchdog: when the close pool is full and the fallback daemon thread
+     * hangs, the watchdog interrupts it after the configured timeout so stuck threads
+     * don't accumulate.
+     */
+    @Test
+    public void testFallbackThreadInterruptedOnTimeout() throws Exception {
+        HdfsFsManager mgr = new HdfsFsManager();
+        Deencapsulation.setField(mgr, "fileSystemCloseTimeoutSecs", 1L);
+        ConcurrentHashMap<HdfsFsIdentity, HdfsFs> cache = getCachedFileSystem(mgr);
+
+        // Replace the close pool with one that always rejects
+        ExecutorService alwaysReject = Mockito.mock(ExecutorService.class);
+        Mockito.when(alwaysReject.submit(Mockito.any(Runnable.class)))
+                .thenThrow(new RejectedExecutionException("pool full"));
+        Deencapsulation.setField(mgr, "fileSystemClosePool", alwaysReject);
+
+        HdfsFsIdentity id = new HdfsFsIdentity("hdfs://host-fallback-timeout", "user");
+        HdfsFs fs = mockExpiredFs(id);
+        CountDownLatch closeStarted = new CountDownLatch(1);
+        CountDownLatch closeInterrupted = new CountDownLatch(1);
+        Mockito.doAnswer(invocation -> {
+            closeStarted.countDown();
+            try {
+                Thread.sleep(60_000);
+            } catch (InterruptedException e) {
+                closeInterrupted.countDown();
+                Thread.currentThread().interrupt();
+            }
+            return null;
+        }).when(fs).closeFileSystem();
+        cache.put(id, fs);
+
+        newChecker(mgr).run();
+
+        // Cache entry removed immediately
+        Assertions.assertFalse(cache.containsKey(id));
+
+        // Close started on fallback daemon thread
+        Assertions.assertTrue(closeStarted.await(2, TimeUnit.SECONDS));
+
+        // Watchdog must interrupt the hung fallback thread within timeout + grace period
+        Assertions.assertTrue(closeInterrupted.await(3, TimeUnit.SECONDS));
     }
 }
