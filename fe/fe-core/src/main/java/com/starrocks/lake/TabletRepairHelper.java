@@ -603,7 +603,8 @@ public class TabletRepairHelper {
         Map<Long, TabletMetadataPB> tabletToValidMetadata = Maps.newHashMap();
 
         long versionBatchSize = INITIAL_VERSION_BATCH_SIZE;
-        long maxVersionBatchSize = Config.lake_repair_metadata_fetch_max_version_batch_size;
+        long maxVersionBatchSize = Math.max(Config.lake_repair_metadata_fetch_max_version_batch_size,
+                INITIAL_VERSION_BATCH_SIZE);
         long maxVersion = partitionMaxVersion;
         while (maxVersion >= partitionMinVersion) {
             long minVersion = Math.max(maxVersion - versionBatchSize + 1, partitionMinVersion);

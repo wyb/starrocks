@@ -3364,6 +3364,7 @@ public class Config extends ConfigBase {
      * The batch size starts from 5 and doubles each iteration until reaching this maximum.
      * Larger batch sizes allow the BE-side file existence cache to deduplicate more
      * object storage accesses across versions.
+     * If set to a value less than 5, it will be clamped to 5 at runtime.
      */
     @ConfField(mutable = true)
     public static long lake_repair_metadata_fetch_max_version_batch_size = 160L;
