@@ -4429,8 +4429,8 @@ TEST_F(LakeServiceTest, test_check_missing_files_cache_across_versions) {
                     break;
                 }
             }
-            ASSERT_TRUE(found_missing) << "version " << entry.metadata().version()
-                                       << " should report " << shared_seg << " as missing";
+            ASSERT_TRUE(found_missing) << "version " << entry.metadata().version() << " should report " << shared_seg
+                                       << " as missing";
         }
     }
 
@@ -4481,9 +4481,8 @@ TEST_F(LakeServiceTest, test_check_missing_files_cache_across_versions) {
             if (entry.metadata().version() == 4) {
                 ASSERT_TRUE(has_unique_seg_missing) << "version 4 should report " << unique_seg << " as missing";
             } else {
-                ASSERT_FALSE(has_unique_seg_missing)
-                        << "version " << entry.metadata().version() << " should NOT report " << unique_seg
-                        << " as missing";
+                ASSERT_FALSE(has_unique_seg_missing) << "version " << entry.metadata().version()
+                                                     << " should NOT report " << unique_seg << " as missing";
             }
         }
     }
