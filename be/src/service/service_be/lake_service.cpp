@@ -1681,13 +1681,14 @@ static Status check_missing_files(const TabletMetadata& metadata, const lake::Ta
                                   ::starrocks::TabletMetadataEntry* entry,
                                   std::unordered_set<std::string>& known_existing_files,
                                   std::unordered_set<std::string>& known_missing_files) {
+    std::unordered_set<std::string> missing_files;
     std::shared_ptr<FileSystem> fs = nullptr;
     auto check_file = [&](const std::string& path, const std::string& filename) -> Status {
         if (known_existing_files.count(filename)) {
             return Status::OK();
         }
         if (known_missing_files.count(filename)) {
-            entry->add_missing_files(filename);
+            missing_files.emplace(filename);
             return Status::OK();
         }
         if (fs == nullptr) {
@@ -1696,7 +1697,7 @@ static Status check_missing_files(const TabletMetadata& metadata, const lake::Ta
         auto st = fs->path_exists(path);
         if (st.is_not_found()) {
             known_missing_files.emplace(filename);
-            entry->add_missing_files(filename);
+            missing_files.emplace(filename);
         } else if (!st.ok()) {
             return st;
         } else {
@@ -1737,6 +1738,9 @@ static Status check_missing_files(const TabletMetadata& metadata, const lake::Ta
         }
     }
 
+    for (const auto& filename : missing_files) {
+        entry->add_missing_files(filename);
+    }
     return Status::OK();
 }
 

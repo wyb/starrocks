@@ -4275,63 +4275,12 @@ TEST_F(LakeServiceTest, test_get_tablet_metadatas) {
         ASSERT_EQ(1, response.tablet_results(0).metadata_entries(0).missing_files_size());
         ASSERT_EQ(seg_name, response.tablet_results(0).metadata_entries(0).missing_files(0));
     }
-
-    // 5.3 check missing files across multiple versions with file existence cache
-    // Higher versions are built on lower versions, so files checked in higher versions
-    // should be cached and reused when checking lower versions.
-    {
-        // Get metadata for version 3 and 4 to find their segment files
-        brpc::Controller cntl;
-        GetTabletMetadatasRequest request;
-        GetTabletMetadatasResponse response;
-
-        request.add_tablet_ids(_tablet_id);
-        request.set_min_version(2);
-        request.set_max_version(4);
-        request.set_check_missing_files(true);
-        _lake_service.get_tablet_metadatas(&cntl, &request, &response, nullptr);
-        ASSERT_FALSE(cntl.Failed()) << cntl.ErrorText();
-        ASSERT_EQ(TStatusCode::OK, response.status().status_code());
-        ASSERT_EQ(1, response.tablet_results_size());
-        const auto& tablet_result2 = response.tablet_results(0);
-        ASSERT_EQ(TStatusCode::OK, tablet_result2.status().status_code());
-        // Should have 3 versions: 4, 3, 2
-        ASSERT_EQ(3, tablet_result2.metadata_entries_size());
-
-        // Collect all segment names from all versions
-        std::unordered_set<std::string> all_segments;
-        for (const auto& ent : tablet_result2.metadata_entries()) {
-            for (const auto& rowset : ent.metadata().rowsets()) {
-                for (const auto& seg : rowset.segments()) {
-                    all_segments.insert(seg);
-                }
-            }
-            // No missing files since all files exist (except the one deleted in 5.2)
-        }
-        // We should have segments from version 2, 3, 4.
-        // Version 1's initial metadata has no rowset. publish_version(1,2) adds 1 segment,
-        // publish_version(2,3) adds 1 segment, publish_version(3,4) adds 1 segment.
-        // Version 2 has 1 rowset(1 seg), version 3 has 2 rowsets(2 segs), version 4 has 3 rowsets(3 segs).
-        // The segment deleted in 5.2 is from version 2's rowset (the first rowset of version 4).
-        // It should be reported as missing in version 4, 3, and 2 entries (since all share that rowset).
-
-        // Verify that the deleted segment from 5.2 is reported as missing in entries that reference it
-        int entries_with_missing = 0;
-        for (const auto& ent : tablet_result2.metadata_entries()) {
-            if (ent.missing_files_size() > 0) {
-                entries_with_missing++;
-            }
-        }
-        // At least the higher version entries that contain the deleted segment should report it
-        ASSERT_GE(entries_with_missing, 1);
-    }
 }
 
-TEST_F(LakeServiceTest, test_check_missing_files_cache_across_versions) {
-    // This test specifically validates the file existence caching optimization:
-    // When checking missing files across multiple versions (from max to min),
-    // files already checked in higher versions should not require repeated
-    // object storage access in lower versions.
+TEST_F(LakeServiceTest, test_check_missing_files_across_versions) {
+    // Validates that missing files are correctly reported across multiple versions
+    // when check_missing_files is enabled, including files shared between versions
+    // and files unique to a single version.
 
     auto publish_version = [&](int64_t base_version, int64_t new_version) {
         auto txn_log = generate_write_txn_log(1, 10 * new_version, 100 * new_version);
