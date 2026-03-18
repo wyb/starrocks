@@ -117,7 +117,6 @@ WITH_AWS=OFF
 USE_STAROS=OFF
 WITH_GCOV=OFF
 WITH_STARCACHE=ON
-WITH_BRPC_KEEPALIVE=OFF
 WITH_DEBUG_SYMBOL_SPLIT=ON
 BUILD_JAVA_EXT=ON
 while true; do
@@ -132,7 +131,6 @@ while true; do
         --with-aws) WITH_AWS=ON; shift ;;
         --with-gcov) WITH_GCOV=ON; shift ;;
         --without-starcache) WITH_STARCACHE=OFF; shift ;;
-        --with-brpc-keepalive) WITH_BRPC_KEEPALIVE=ON; shift ;;
         --excluding-test-suit) EXCLUDING_TEST_SUIT=$2; shift 2;;
         --enable-shared-data|--use-staros) USE_STAROS=ON; shift ;;
         --without-debug-symbol-split) WITH_DEBUG_SYMBOL_SPLIT=OFF; shift ;;
@@ -215,7 +213,6 @@ ${CMAKE_CMD}  -G "${CMAKE_GENERATOR}" \
             -DSTARLET_INSTALL_DIR=${STARLET_INSTALL_DIR}          \
             -DWITH_GCOV=${WITH_GCOV} \
             -DWITH_STARCACHE=${WITH_STARCACHE} \
-            -DWITH_BRPC_KEEPALIVE=${WITH_BRPC_KEEPALIVE} \
             -DSTARROCKS_JIT_ENABLE=ON \
             -DWITH_RELATIVE_SRC_PATH=OFF \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ../
