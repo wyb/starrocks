@@ -80,7 +80,6 @@ ThreadPool* vacuum_thread_pool(ExecEnv* env) {
     return get_thread_pool(env, TTaskType::RELEASE_SNAPSHOT);
 }
 
-
 int get_num_publish_queued_tasks(void*) {
 #ifndef BE_TEST
     auto tp = publish_version_thread_pool(ExecEnv::GetInstance());
