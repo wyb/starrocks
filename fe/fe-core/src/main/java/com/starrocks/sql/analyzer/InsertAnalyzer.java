@@ -497,7 +497,12 @@ public class InsertAnalyzer {
                         continue;
                     }
 
-                    String targetColumnName = targetColumnNames.get(i);
+                    String targetColumnName;
+                    if (insertStmt.isColumnMatchByName()) {
+                        targetColumnName = selectColumnName;
+                    } else {
+                        targetColumnName = targetColumnNames.get(i);
+                    }
                     if (!targetTableColumns.containsKey(targetColumnName)) {
                         continue;
                     }
