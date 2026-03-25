@@ -447,6 +447,9 @@ public class AstToStringBuilder {
             }
 
             sb.append(stmt.getMvName());
+            if (stmt.isForceDrop()) {
+                sb.append(" FORCE");
+            }
             return sb.toString();
         }
 
