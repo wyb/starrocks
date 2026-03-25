@@ -399,6 +399,9 @@ public class AST2StringVisitor implements AstVisitorExtendInterface<String, Void
         }
 
         sb.append(stmt.getMvName());
+        if (stmt.isForceDrop()) {
+            sb.append(" FORCE");
+        }
         return sb.toString();
     }
 
