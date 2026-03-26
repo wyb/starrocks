@@ -123,7 +123,6 @@ public class ExternalResourceCleanupTest {
         schema.add(new Column("k1", Type.INT));
         schema.add(new Column("k2", Type.VARCHAR));
 
-
         // minimal IcebergTable: nativeTable can be null for this test because getNativeTable isn't invoked in close().
         IcebergTable icebergTable = new IcebergTable(1, "iceberg_table", "iceberg_catalog",
                 "resource", "db", "table", "", schema, null, java.util.Collections.emptyMap());
@@ -249,7 +248,8 @@ public class ExternalResourceCleanupTest {
         TupleDescriptor tupleDescriptor = new TupleDescriptor(new TupleId(1));
         tupleDescriptor.setTable(table);
 
-        DeltaLakeScanNode scanNode = new DeltaLakeScanNode(new PlanNodeId(1), tupleDescriptor, "DeltaLakeScanNode");
+        DeltaLakeScanNode scanNode =
+                new DeltaLakeScanNode(new PlanNodeId(1), tupleDescriptor, "DeltaLakeScanNode", null, null, null);
         DeltaConnectorScanRangeSource scanRangeSource = Mockito.mock(DeltaConnectorScanRangeSource.class);
 
         Field field = DeltaLakeScanNode.class.getDeclaredField("scanRangeSource");
@@ -269,7 +269,8 @@ public class ExternalResourceCleanupTest {
         TupleDescriptor tupleDescriptor = new TupleDescriptor(new TupleId(1));
         tupleDescriptor.setTable(table);
 
-        DeltaLakeScanNode scanNode = new DeltaLakeScanNode(new PlanNodeId(1), tupleDescriptor, "DeltaLakeScanNode");
+        DeltaLakeScanNode scanNode =
+                new DeltaLakeScanNode(new PlanNodeId(1), tupleDescriptor, "DeltaLakeScanNode", null, null, null);
         DeltaConnectorScanRangeSource scanRangeSource = Mockito.mock(DeltaConnectorScanRangeSource.class);
 
         Field field = DeltaLakeScanNode.class.getDeclaredField("scanRangeSource");
@@ -290,7 +291,8 @@ public class ExternalResourceCleanupTest {
         TupleDescriptor tupleDescriptor = new TupleDescriptor(new TupleId(1));
         tupleDescriptor.setTable(table);
 
-        DeltaLakeScanNode scanNode = new DeltaLakeScanNode(new PlanNodeId(1), tupleDescriptor, "DeltaLakeScanNode");
+        DeltaLakeScanNode scanNode =
+                new DeltaLakeScanNode(new PlanNodeId(1), tupleDescriptor, "DeltaLakeScanNode", null, null, null);
         // scanRangeSource remains null
         scanNode.clear(); // should not throw
     }
@@ -419,7 +421,7 @@ public class ExternalResourceCleanupTest {
             internalMock.when(() -> InternalScanFileUtils.getDeletionVectorDescriptorFromRow(row))
                     .thenReturn((DeletionVectorDescriptor) null);
             scanFileMock.when(() -> ScanFileUtils.convertFromRowToFileScanTask(
-                    Mockito.anyBoolean(), Mockito.eq(row), Mockito.eq(meta), Mockito.anyLong(), Mockito.isNull()))
+                            Mockito.anyBoolean(), Mockito.eq(row), Mockito.eq(meta), Mockito.anyLong(), Mockito.isNull()))
                     .thenReturn(Pair.create(fileTask, serDe));
 
             // invoke iterator
@@ -746,7 +748,8 @@ public class ExternalResourceCleanupTest {
         TupleDescriptor tupleDescriptor = new TupleDescriptor(new TupleId(1));
         tupleDescriptor.setTable(table);
 
-        DeltaLakeScanNode scanNode = new DeltaLakeScanNode(new PlanNodeId(1), tupleDescriptor, "DeltaLakeScanNode");
+        DeltaLakeScanNode scanNode =
+                new DeltaLakeScanNode(new PlanNodeId(1), tupleDescriptor, "DeltaLakeScanNode", null, null, null);
         DeltaConnectorScanRangeSource scanRangeSource = Mockito.mock(DeltaConnectorScanRangeSource.class);
         Mockito.doThrow(new RuntimeException("close error")).when(scanRangeSource).close();
 

@@ -120,6 +120,7 @@ import static org.mockito.ArgumentMatchers.isA;
 
 public class IcebergScanNodeTest {
     public static final HdfsEnvironment HDFS_ENVIRONMENT = new HdfsEnvironment();
+
     class TestableIcebergConnectorScanRangeSource extends IcebergConnectorScanRangeSource {
         public TestableIcebergConnectorScanRangeSource(IcebergConnectorScanRangeSource original) {
             super(
@@ -286,7 +287,6 @@ public class IcebergScanNodeTest {
         Assertions.assertEquals(1, scanSource.getEqualAppliedDeleteFiles().size(), "should have 1 eq delete");
     }
 
-
     @Test
     public void testBuildAndIterate(
             @Mocked IcebergConnectorScanRangeSource mockSource,
@@ -413,25 +413,25 @@ public class IcebergScanNodeTest {
     public void testVisitAlterTableOperationClause_otherOp_addsArgs(@Mocked IcebergTable table) {
         AlterTableClauseAnalyzer analyzer = new AlterTableClauseAnalyzer(table);
         Expr expr = new StringLiteral("dummy");
-    
+
         AlterTableOperationClause clause = new AlterTableOperationClause(
                 new NodePosition(1, 1),
                 "OTHER_OP",
                 Collections.singletonList(expr),
                 null
         );
-    
+
         final ConstantOperator constOp = ConstantOperator.createInt(123);
-    
+
         new MockUp<SqlToScalarOperatorTranslator>() {
             @Mock
             public ScalarOperator translate(Expr e, ExpressionMapping m, ColumnRefFactory f) {
                 return constOp;
             }
         };
-    
+
         analyzer.visitAlterTableOperationClause(clause, new ConnectContext());
-    
+
         Assertions.assertFalse(clause.getArgs().isEmpty());
         Assertions.assertEquals(constOp, clause.getArgs().get(0));
     }
@@ -440,25 +440,25 @@ public class IcebergScanNodeTest {
     public void testVisitAlterTableOperationClause_otherOp_addsArgs2(@Mocked IcebergTable table) {
         AlterTableClauseAnalyzer analyzer = new AlterTableClauseAnalyzer(table);
         Expr expr = new StringLiteral("dummy");
-    
+
         AlterTableOperationClause clause = new AlterTableOperationClause(
                 new NodePosition(1, 1),
                 "OTHER_OP",
                 Collections.singletonList(expr),
                 null
         );
-    
+
         final ConstantOperator constOp = ConstantOperator.createInt(123);
-    
+
         new MockUp<SqlToScalarOperatorTranslator>() {
             @Mock
             public ScalarOperator translate(Expr e, ExpressionMapping m, ColumnRefFactory f) {
                 return constOp;
             }
         };
-    
+
         analyzer.visitAlterTableOperationClause(clause, new ConnectContext());
-    
+
         Assertions.assertFalse(clause.getArgs().isEmpty());
         Assertions.assertEquals(constOp, clause.getArgs().get(0));
     }
@@ -609,7 +609,8 @@ public class IcebergScanNodeTest {
     }
 
     @Test
-    public void testVisitAlterTableOperationClause_whereClauseButNotIceberg_shouldThrow(@Mocked com.starrocks.catalog.Table table) {
+    public void testVisitAlterTableOperationClause_whereClauseButNotIceberg_shouldThrow(
+            @Mocked com.starrocks.catalog.Table table) {
         AlterTableClauseAnalyzer analyzer = new AlterTableClauseAnalyzer(table);
         Expr where = new BoolLiteral(true);
         AlterTableOperationClause clause = new AlterTableOperationClause(
@@ -629,7 +630,6 @@ public class IcebergScanNodeTest {
         );
         PartitionSpec spec = PartitionSpec.builderFor(schema).truncate("col1", 10).build();
 
-
         BaseTable mockNativeTable = Mockito.mock(BaseTable.class);
         TableOperations mockOps = Mockito.mock(TableOperations.class);
         TableMetadata mockMetadata = Mockito.mock(TableMetadata.class);
@@ -643,7 +643,6 @@ public class IcebergScanNodeTest {
         Mockito.when(mockNativeTable.location()).thenReturn("file:///tmp/test");
         Mockito.when(mockNativeTable.properties()).thenReturn(new HashMap<>());
         Mockito.when(mockNativeTable.operations()).thenReturn(mockOps);
-
 
         List<Column> schemaColumns = new ArrayList<>();
         schemaColumns.add(new Column("col1", ScalarType.createVarchar(20)));
@@ -1164,7 +1163,6 @@ public class IcebergScanNodeTest {
         Mockito.when(sessVar.clone()).thenReturn(sessVar);
         Mockito.doNothing().when(sessVar).setQueryTimeoutS(Mockito.anyInt());
 
-
         PlanFragment fragment = Mockito.mock(PlanFragment.class);
         ArrayList<PlanFragment> fragments = new ArrayList<>();
         fragments.add(fragment);
@@ -1226,7 +1224,7 @@ public class IcebergScanNodeTest {
 
     @Test
     void rewriteDataFiles_shouldBuildSQL_andRunJob(@Mocked org.apache.iceberg.Table table,
-            @Mocked IcebergHiveCatalog icebergHiveCatalog) throws Exception {
+                                                   @Mocked IcebergHiveCatalog icebergHiveCatalog) throws Exception {
         // --- arrange
         String catalog = "c1";
         String db = "db";
@@ -1255,12 +1253,15 @@ public class IcebergScanNodeTest {
 
         ConnectContext ctx = Mockito.mock(ConnectContext.class);
         new MockUp<IcebergRewriteDataJob>() {
-            @Mock public void prepare() {}
-            @Mock public IcebergRewriteDataJob.RewriteMetrics execute() {
+            @Mock
+            public void prepare() {
+            }
+
+            @Mock
+            public IcebergRewriteDataJob.RewriteMetrics execute() {
                 return IcebergRewriteDataJob.RewriteMetrics.EMPTY;
             }
         };
-
 
         IcebergAlterTableExecutor target = new IcebergAlterTableExecutor(new AlterTableStmt(
                 new TableName("db", "table"),
@@ -1275,7 +1276,7 @@ public class IcebergScanNodeTest {
 
     @Test
     void rewriteDataFiles_shouldWrapAndThrow_whenJobExecuteFails(@Mocked org.apache.iceberg.Table table,
-            @Mocked IcebergHiveCatalog icebergHiveCatalog) throws Exception {
+                                                                 @Mocked IcebergHiveCatalog icebergHiveCatalog) throws Exception {
         // --- arrange
         String catalog = "c1";
         String db = "db";
@@ -1304,12 +1305,15 @@ public class IcebergScanNodeTest {
 
         ConnectContext ctx = Mockito.mock(ConnectContext.class);
         new MockUp<IcebergRewriteDataJob>() {
-            @Mock public void prepare() {}
-            @Mock public IcebergRewriteDataJob.RewriteMetrics execute() {
+            @Mock
+            public void prepare() {
+            }
+
+            @Mock
+            public IcebergRewriteDataJob.RewriteMetrics execute() {
                 throw new RuntimeException("boom");
             }
         };
-
 
         IcebergAlterTableExecutor target = new IcebergAlterTableExecutor(new AlterTableStmt(
                 new TableName("db", "table"),

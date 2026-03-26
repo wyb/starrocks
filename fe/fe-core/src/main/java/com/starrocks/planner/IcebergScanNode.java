@@ -79,6 +79,7 @@ public class IcebergScanNode extends ScanNode {
     private Optional<List<BucketProperty>> bucketProperties = Optional.empty();
     private PartitionIdGenerator partitionIdGenerator = null;
     private IcebergMetricsReporter icebergScanMetricsReporter;
+    private boolean enableIncrementalScanRanges = false;
 
     public IcebergScanNode(PlanNodeId id, TupleDescriptor desc, String planNodeName,
                            IcebergTableMORParams tableFullMORParams, IcebergMORParams morParams,
@@ -171,6 +172,7 @@ public class IcebergScanNode extends ScanNode {
     }
 
     public void setupScanRangeLocations(boolean enableIncrementalScanRanges) throws StarRocksException {
+        this.enableIncrementalScanRanges = enableIncrementalScanRanges;
         Preconditions.checkNotNull(snapshotId, "snapshot id is null");
         if (snapshotId.isEmpty()) {
             LOG.warn(String.format("Table %s has no snapshot!", icebergTable.getCatalogTableName()));
@@ -273,6 +275,10 @@ public class IcebergScanNode extends ScanNode {
 
     public HDFSScanNodePredicates getScanNodePredicates() {
         return scanNodePredicates;
+    }
+
+    public IcebergTable getIcebergTable() {
+        return icebergTable;
     }
 
     public void setBucketProperties(List<BucketProperty> bucketProperties) {
@@ -411,6 +417,17 @@ public class IcebergScanNode extends ScanNode {
         HdfsScanNode.setMinMaxConjunctsToThrift(tHdfsScanNode, this, this.getScanNodePredicates());
         HdfsScanNode.setDataCacheOptionsToThrift(tHdfsScanNode, dataCacheOptions);
         bucketProperties.ifPresent(properties -> HdfsScanNode.setBucketProperties(tHdfsScanNode, properties));
+    }
+
+    @Override
+    public void prepareRetry() {
+        clear();
+        reachLimit = false;
+        try {
+            setupScanRangeLocations(enableIncrementalScanRanges);
+        } catch (StarRocksException e) {
+            throw new RuntimeException("Failed to reset IcebergScanNode for retry", e);
+        }
     }
 
     @Override
