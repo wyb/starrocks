@@ -795,6 +795,7 @@ public class StmtExecutor {
                                     DebugUtil.printId(uuid));
                             context.setExecutionId(
                                     new TUniqueId(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits()));
+                            retryContext.prepareRetry();
                         }
 
                         handleQueryStmt(retryContext.getExecPlan());
