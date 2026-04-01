@@ -20,7 +20,7 @@ namespace starrocks {
 
 TEST(NonRetryableLoadErrorsTest, testPrimaryKeySizeExceed) {
     ASSERT_TRUE(is_non_retryable_load_error(kPrimaryKeySizeExceedError));
-    ASSERT_TRUE(is_non_retryable_load_error("primary key size exceed the limit"));
+    ASSERT_TRUE(is_non_retryable_load_error("primary key size exceed the limit."));
     ASSERT_TRUE(is_non_retryable_load_error("some prefix: primary key size exceed the limit."));
 }
 

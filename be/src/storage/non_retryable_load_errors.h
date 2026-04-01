@@ -14,8 +14,8 @@
 
 #pragma once
 
+#include <array>
 #include <string_view>
-#include <vector>
 
 namespace starrocks {
 
@@ -25,16 +25,17 @@ namespace starrocks {
 //
 // To add a new non-retryable error:
 //   1. Add a constant below (kXxxError)
-//   2. Add it to the vector in is_non_retryable_load_error()
+//   2. Add it to kNonRetryableLoadErrors
 //   3. Use the constant at the error source site
 
-inline constexpr char kPrimaryKeySizeExceedError[] = "primary key size exceed the limit";
+inline constexpr std::string_view kPrimaryKeySizeExceedError = "primary key size exceed the limit.";
+
+inline constexpr std::array<std::string_view, 1> kNonRetryableLoadErrors = {
+        kPrimaryKeySizeExceedError,
+};
 
 inline bool is_non_retryable_load_error(std::string_view msg) {
-    static const std::vector<std::string_view> non_retryable_errors = {
-            kPrimaryKeySizeExceedError,
-    };
-    for (const auto& pattern : non_retryable_errors) {
+    for (const auto& pattern : kNonRetryableLoadErrors) {
         if (msg.find(pattern) != std::string_view::npos) {
             return true;
         }
