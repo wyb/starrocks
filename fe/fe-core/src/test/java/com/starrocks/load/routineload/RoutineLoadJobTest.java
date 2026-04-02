@@ -874,7 +874,7 @@ public class RoutineLoadJobTest {
         RoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
         Deencapsulation.setField(routineLoadJob, "routineLoadTaskInfoList", routineLoadTaskInfoList);
         Deencapsulation.setField(routineLoadJob, "state", RoutineLoadJob.JobState.RUNNING);
-        routineLoadJob.afterAborted(transactionState, txnStatusChangeReasonString);
+        routineLoadJob.afterAborted(transactionState, true, txnStatusChangeReasonString);
 
         Assertions.assertEquals(RoutineLoadJob.JobState.PAUSED, routineLoadJob.getState());
     }
@@ -935,7 +935,7 @@ public class RoutineLoadJobTest {
         Deencapsulation.setField(routineLoadJob, "state", RoutineLoadJob.JobState.RUNNING);
         Deencapsulation.setField(routineLoadJob, "routineLoadTaskInfoList", routineLoadTaskInfoList);
         Deencapsulation.setField(routineLoadJob, "progress", currentProgress);
-        routineLoadJob.afterAborted(transactionState, txnStatusChangeReasonString);
+        routineLoadJob.afterAborted(transactionState, true, txnStatusChangeReasonString);
 
         Assertions.assertEquals(RoutineLoadJob.JobState.RUNNING, routineLoadJob.getState());
     }
