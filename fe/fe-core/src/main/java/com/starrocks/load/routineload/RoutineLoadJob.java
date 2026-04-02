@@ -1228,7 +1228,7 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback
                 if (rlAttachment != null && rlAttachment.isNonRetryable()) {
                     String msg = "be " + taskBeId + " abort task "
                             + "with non-retryable reason: " + txnStatusChangeReasonString;
-                    updateState(JobState.PAUSED, new ErrorReason(InternalErrorCode.TASKS_ABORT_ERR, msg));
+                    updateState(JobState.PAUSED, new ErrorReason(InternalErrorCode.TASKS_ABORT_ERR, msg), false);
                     return;
                 }
 
