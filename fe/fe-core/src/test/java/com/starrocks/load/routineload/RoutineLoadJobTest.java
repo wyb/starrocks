@@ -839,10 +839,10 @@ public class RoutineLoadJobTest {
     }
 
     @Test
-    public void testAfterAbortedNonRetryableAttachment(@Injectable TransactionState transactionState,
-                                                        @Injectable RoutineLoadTaskInfo routineLoadTaskInfo)
+    public void testAfterAbortedNonRetryableAttachment(@Mocked GlobalStateMgr globalStateMgr,
+                                                       @Injectable TransactionState transactionState,
+                                                       @Injectable RoutineLoadTaskInfo routineLoadTaskInfo)
             throws StarRocksException {
-
         List<RoutineLoadTaskInfo> routineLoadTaskInfoList = Lists.newArrayList();
         routineLoadTaskInfoList.add(routineLoadTaskInfo);
         long txnId = 1L;
@@ -870,6 +870,12 @@ public class RoutineLoadJobTest {
             }
         };
 
+        new MockUp<EditLog>() {
+            @Mock
+            public void logOpRoutineLoadJob(RoutineLoadOperation routineLoadOperation) {
+            }
+        };
+
         // non-retryable attachment should cause pause even with unrecognized reason
         String txnStatusChangeReasonString = "primary key size exceed the limit";
         RoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
@@ -882,10 +888,9 @@ public class RoutineLoadJobTest {
 
     @Test
     public void testAfterAbortedRetryableAttachment(@Mocked RoutineLoadMgr routineLoadMgr,
-                                                     @Injectable TransactionState transactionState,
-                                                     @Injectable KafkaTaskInfo routineLoadTaskInfo)
+                                                    @Injectable TransactionState transactionState,
+                                                    @Injectable KafkaTaskInfo routineLoadTaskInfo)
             throws StarRocksException {
-
         Deencapsulation.setField(routineLoadTaskInfo, "routineLoadManager", routineLoadMgr);
         List<RoutineLoadTaskInfo> routineLoadTaskInfoList = Lists.newArrayList();
         routineLoadTaskInfoList.add(routineLoadTaskInfo);
