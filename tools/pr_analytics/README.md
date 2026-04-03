@@ -1,0 +1,152 @@
+# PR Analytics - StarRocks PR 智能分析工具
+
+通过 Ollama 本地模型对 StarRocks GitHub PR 生成中英文双语摘要和向量 embedding，存入 StarRocks（Primary Key + HNSW 向量索引），支持语义搜索和 Web UI。
+
+## 架构
+
+```
+gh CLI 拉取 PR  →  Ollama 生成英文摘要  →  Ollama 翻译为中文  →  bge-m3 生成 embedding
+                                                                        ↓
+Web UI ← 语义搜索 / 关键词过滤 ← StarRocks (Primary Key + HNSW 向量索引)
+```
+
+- **摘要**：先生成英文摘要（与源码语言一致，质量高），再翻译为中文（展示友好）
+- **embedding**：基于 `title + 英文摘要` 生成，bge-m3 多语言模型支持中英文混合查询
+- **PR body 清洗**：仅提取 `Why I'm doing` 和 `What I'm doing` 两个 section，过滤 template 噪声和 `Fixes #issue` 行
+
+## 前置准备
+
+```bash
+# Ollama
+brew install ollama
+ollama serve
+ollama pull bge-m3         # embedding 模型 (1024维, 多语言)
+ollama pull qwen3.5:9b     # 摘要模型
+
+# StarRocks 3.4+ (需支持向量索引)
+# mysql client (用于执行 SQL)
+```
+
+## 使用流程
+
+### 1. 拉取 PR 原始数据
+
+按天存储，按周分批拉取（避免 GitHub API 限制），增量去重。
+
+```bash
+python3 pr.py fetch --days 1
+python3 pr.py fetch --days 30
+python3 pr.py fetch --since 2025-04-01
+python3 pr.py fetch --since 2025-04-01 --until 2025-04-30
+```
+
+输出: `data/raw/pr_raw_20250401.json`, `data/raw/pr_raw_20250402.json`, ...
+
+### 2. AI 增强：生成摘要 + embedding
+
+断点续跑，自动跳过已处理的 PR。
+
+```bash
+python3 pr.py enrich --file data/raw/pr_raw_20250401.json
+python3 pr.py enrich --since 2025-04-01
+python3 pr.py enrich --since 2025-04-01 --until 2025-04-30
+python3 pr.py enrich --since 2025-04-01 --until 2025-04-30 --reverse  # 从新到旧处理
+```
+
+输出: `data/enriched/pr_enriched_20250401.json`, `data/enriched/pr_enriched_20250402.json`, ...
+
+### 3. 建表（首次）
+
+Primary Key 模型 + HNSW 向量索引。如果表已存在会报错，使用 `--force` 强制重建。
+
+```bash
+python3 pr.py init-table            # 表已存在则报错
+python3 pr.py init-table --force    # 强制删除重建
+```
+
+### 4. 导入 StarRocks
+
+重复导入自动更新（Primary Key 去重）。
+
+```bash
+python3 pr.py load --file data/enriched/pr_enriched_20250401.json
+python3 pr.py load --since 2025-04-01
+python3 pr.py load --since 2025-04-01 --until 2025-04-30
+```
+
+### 5. 语义搜索（命令行）
+
+```bash
+python3 pr.py search "内存泄漏"
+python3 pr.py search "materialized view refresh" --top 5
+```
+
+支持中英文混合查询。
+
+### 6. Web UI
+
+```bash
+python3 web.py                # 默认 8888 端口
+python3 web.py --port 9090    # 自定义端口
+```
+
+打开 `http://localhost:8888`，支持：
+- 语义搜索（自然语言，调 Ollama 生成 embedding）
+- 关键词过滤（SQL LIKE，匹配 title + 中英文摘要）
+- 筛选条件：Module / Type / Version / Author / 时间范围
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SR_HOST` | `127.0.0.1` | StarRocks FE 地址 |
+| `SR_PORT` | `9030` | StarRocks 查询端口 |
+| `SR_HTTP_PORT` | `8030` | StarRocks HTTP 端口 |
+| `SR_USER` | `root` | StarRocks 用户 |
+| `SR_PASSWORD` | (空) | StarRocks 密码 |
+| `OLLAMA_HOST` | `localhost` | Ollama 地址 |
+| `OLLAMA_PORT` | `11434` | Ollama 端口 |
+| `EMBED_MODEL` | `bge-m3` | embedding 模型 |
+| `SUMMARY_MODEL` | `qwen3.5:9b` | 摘要模型 |
+| `EMBEDDING_DIM` | `1024` | 向量维度 |
+| `MYSQL_BIN` | `/usr/local/Cellar/mysql-client@5.7/5.7.29/bin/mysql` | mysql 客户端路径 |
+
+## 字段说明
+
+| 字段 | 说明 |
+|------|------|
+| `pr_number` | PR 编号 |
+| `title` | 标题 |
+| `author` | 作者 |
+| `labels` | 标签 |
+| `created_at` | 创建时间 |
+| `merged_at` | 合并时间 |
+| `additions` | 增加行数 |
+| `deletions` | 删除行数 |
+| `changed_files` | 变更文件数 |
+| `module` | 模块: FE / BE / Docs / Test / Tool |
+| `change_type` | 变更类型: BugFix / Feature / Enhancement / Refactor / UT / Doc / Tool |
+| `version` | 版本 (从 labels 解析, 默认 main) |
+| `ai_summary` | AI 中文摘要 (展示用) |
+| `ai_summary_en` | AI 英文摘要 (embedding 用) |
+| `body` | PR 原始描述 |
+| `embedding` | 向量表示 (bge-m3, 1024维) |
+
+## 数据目录结构
+
+```
+data/
+├── raw/
+│   ├── pr_raw_20250401.json        # 4月1日合并的 PR 原始数据
+│   ├── pr_raw_20250402.json
+│   └── ...
+└── enriched/
+    ├── pr_enriched_20250401.json   # 4月1日 PR + 双语摘要 + embedding
+    ├── pr_enriched_20250402.json
+    └── ...
+```
+
+## TODO
+
+1. backport PR 合并到 main PR，main PR 记录版本就可以？
+2. 是否需要分析 PR 内容？有些 PR 没写 description（只能通过 title 生成摘要）或者 description 写的不全。
