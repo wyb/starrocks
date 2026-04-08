@@ -7,24 +7,30 @@ Prerequisites:
     ollama serve
     ollama pull bge-m3         # embedding 模型 (1024维, 多语言)
     ollama pull qwen3.5:9b     # 摘要模型
+    pip install pymysql        # StarRocks 连接
 
 Usage:
     # Step 1: 拉取 PR 原始数据 (按天存储, 按周分批, 增量去重)
     python3 pr.py fetch --days 1
     python3 pr.py fetch --since 2025-04-01 --until 2025-04-30
 
-    # Step 2: AI 增强 (生成摘要 + embedding, 断点续跑)
+    # Step 2: AI 增强 (生成摘要 + embedding, 断点续跑, 自动跳过 backport PR)
     python3 pr.py enrich --file data/raw/pr_raw_20250401.json
     python3 pr.py enrich --since 2025-04-01 --until 2025-04-30
+    python3 pr.py enrich --since 2025-04-01 --until 2025-04-30 --reverse
 
-    # Step 3: 建表 (首次, Primary Key + HNSW 向量索引)
+    # Step 3: 建表 (pr_data + pr_versions, 支持 --force 强制重建)
     python3 pr.py init-table
+    python3 pr.py init-table --force
 
-    # Step 4: 导入 StarRocks (重复导入自动更新)
+    # Step 4: 导入 StarRocks (重复导入自动更新, 同时写入 pr_versions 主版本)
     python3 pr.py load --file data/enriched/pr_enriched_20250401.json
     python3 pr.py load --since 2025-04-01 --until 2025-04-30
 
-    # Step 5: 语义搜索
+    # Step 5: 关联 backport 版本 (扫描 raw 文件, 写入 pr_versions)
+    python3 pr.py link-backport --since 2025-04-01 --until 2025-04-30
+
+    # Step 6: 语义搜索
     python3 pr.py search "内存泄漏"
     python3 pr.py search "物化视图刷新" --top 5
 """
@@ -39,6 +45,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+import pymysql
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -316,7 +323,7 @@ def cmd_fetch(args):
         if new_rows:
             print(f"\n  {out_file.name}: {len(new_rows)} new, {len(day_rows)} total")
             for r in new_rows:
-                print(f"    #{r['pr_number']} [{r['change_type']}] [{r['module']}] {r['title'][:60]}")
+                print(f"    #{r['pr_number']} [{r['change_type']}] [{r['module']}] {r['title'][:80]}")
         total_saved += len(new_rows)
 
     print(f"\nSaved {total_saved} PRs across {len(by_date)} files")
@@ -390,7 +397,7 @@ def _enrich_file(file_path: Path, output: Path = None):
 
         # Skip backport PRs (they only contribute version info via link-backport)
         if parse_backport(row.get("title", "")):
-            print(f"  [{i+1}/{total}] PR #{pr_num}: skip backport - {row['title'][:60]}")
+            print(f"  [{i+1}/{total}] PR #{pr_num}: skip backport - {row['title'][:80]}")
             skip_backport += 1
             continue
 
@@ -401,7 +408,7 @@ def _enrich_file(file_path: Path, output: Path = None):
 
         title = row["title"]
         body = row.get("body") or ""
-        print(f"  [{i+1}/{total}] PR #{pr_num}: {title[:60]}...")
+        print(f"  [{i+1}/{total}] PR #{pr_num}: {title[:80]}...")
 
         # AI summary (Chinese + English)
         print(f"    Summarizing ...")
@@ -456,8 +463,8 @@ def cmd_init_table(args):
     if not args.force:
         # Check if table already exists
         try:
-            result = sr_execute_sql(f"USE {SR_DB}; SHOW TABLES LIKE 'pr_data';")
-            if "pr_data" in result:
+            rows = sr_query(f"USE {SR_DB}; SHOW TABLES LIKE 'pr_data'")
+            if rows:
                 print(f"Error: Table {SR_DB}.pr_data already exists. Use --force to drop and recreate.")
                 sys.exit(1)
         except Exception:
@@ -666,20 +673,11 @@ ORDER BY approx_cosine_similarity(embedding, ARRAY<FLOAT>{vec_str}) DESC
 LIMIT {top_k};
 """
     print("  Querying StarRocks ...")
-    result = sr_execute_sql(sql)
+    rows = sr_query(sql)
 
-    # Parse TSV output from mysql CLI
-    if not result.strip():
+    if not rows:
         print("\nNo results found.")
         return
-
-    lines = result.strip().split("\n")
-    if len(lines) <= 1:
-        print("\nNo results found.")
-        return
-
-    headers = lines[0].split("\t")
-    rows = [dict(zip(headers, line.split("\t"))) for line in lines[1:]]
 
     print(f"\n{'=' * 80}")
     print(f"  Search: \"{query}\"  |  {len(rows)} results")
@@ -708,25 +706,44 @@ LIMIT {top_k};
 
 # --- StarRocks Helpers ---
 
-def sr_execute_sql(sql: str) -> str:
-    """Execute SQL via mysql CLI."""
-    mysql_bin = os.getenv("MYSQL_BIN",
-                          "/usr/local/Cellar/mysql-client@5.7/5.7.29/bin/mysql")
-    cmd = [
-        mysql_bin,
-        f"--host={SR_HOST}",
-        f"--port={SR_PORT}",
-        f"--user={SR_USER}",
-        "--batch", "--raw",
-    ]
-    if SR_PASSWORD:
-        cmd.append(f"--password={SR_PASSWORD}")
+def _get_conn():
+    """Get a pymysql connection to StarRocks."""
+    return pymysql.connect(
+        host=SR_HOST,
+        port=int(SR_PORT),
+        user=SR_USER,
+        password=SR_PASSWORD,
+        database=SR_DB,
+        charset="utf8mb4",
+    )
 
-    result = subprocess.run(cmd, input=sql, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"SQL Error: {result.stderr}")
-        raise RuntimeError(result.stderr)
-    return result.stdout
+
+def sr_execute_sql(sql: str):
+    """Execute one or more SQL statements via pymysql."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            for stmt in sql.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    cur.execute(stmt)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def sr_query(sql: str) -> list:
+    """Execute SQL and return list of dicts."""
+    conn = _get_conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            for stmt in sql.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    cur.execute(stmt)
+            return cur.fetchall()
+    finally:
+        conn.close()
 
 
 def load_to_starrocks(rows: list[dict]):
