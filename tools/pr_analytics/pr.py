@@ -129,6 +129,11 @@ def parse_change_type(title: str) -> str:
     return "Other"
 
 
+def parse_backport(title: str) -> list[int]:
+    """Extract source PR numbers from backport title like '(backport #71082)'. Returns list of source PR numbers, empty if not a backport."""
+    return [int(m) for m in re.findall(r"\(backport\s+#(\d+)\)", title, re.IGNORECASE)]
+
+
 def infer_version(labels: str) -> str:
     """Extract version from labels like 'version:4.1.1'."""
     m = re.search(r"version[:\s]*([\d]+\.[\d]+(?:\.[\d]+)?)", labels)
@@ -379,8 +384,15 @@ def _enrich_file(file_path: Path, output: Path = None):
     enriched_rows = []
     total = len(raw_rows)
     new_count = 0
+    skip_backport = 0
     for i, row in enumerate(raw_rows):
         pr_num = row["pr_number"]
+
+        # Skip backport PRs (they only contribute version info via link-backport)
+        if parse_backport(row.get("title", "")):
+            print(f"  [{i+1}/{total}] PR #{pr_num}: skip backport - {row['title'][:60]}")
+            skip_backport += 1
+            continue
 
         # Skip already enriched
         if pr_num in existing:
@@ -413,7 +425,7 @@ def _enrich_file(file_path: Path, output: Path = None):
         with open(out_file, "w") as f:
             json.dump(enriched_rows, f, ensure_ascii=False)
 
-    print(f"  {out_file.name}: enriched {new_count}, skipped {total - new_count}")
+    print(f"  {out_file.name}: enriched {new_count}, skipped backport {skip_backport}, skipped existing {total - new_count - skip_backport}")
     return new_count
 
 
@@ -451,12 +463,13 @@ def cmd_init_table(args):
         except Exception:
             pass  # Database may not exist yet, proceed
 
-    drop_stmt = "DROP TABLE IF EXISTS pr_data;" if args.force else ""
+    drop_data = "DROP TABLE IF EXISTS pr_data;" if args.force else ""
+    drop_versions = "DROP TABLE IF EXISTS pr_versions;" if args.force else ""
     ddl = f"""
 CREATE DATABASE IF NOT EXISTS {SR_DB};
 USE {SR_DB};
 
-{drop_stmt}
+{drop_data}
 
 CREATE TABLE pr_data (
     pr_number       INT            NOT NULL COMMENT 'PR编号',
@@ -486,10 +499,21 @@ CREATE TABLE pr_data (
 PRIMARY KEY(pr_number)
 DISTRIBUTED BY HASH(pr_number) BUCKETS 1
 PROPERTIES("replication_num" = "1");
+
+{drop_versions}
+
+CREATE TABLE pr_versions (
+    pr_number     INT          NOT NULL COMMENT '主 PR 编号',
+    version       VARCHAR(64)  NOT NULL COMMENT '版本',
+    backport_pr   INT          COMMENT 'backport PR 编号, 主版本为 NULL'
+) ENGINE = OLAP
+PRIMARY KEY(pr_number, version)
+DISTRIBUTED BY HASH(pr_number) BUCKETS 1
+PROPERTIES("replication_num" = "1");
 """
-    print("Creating database and table ...")
+    print("Creating database and tables ...")
     sr_execute_sql(ddl)
-    print("  Done. Table pr_analytics.pr_data created.")
+    print("  Done. Tables pr_analytics.pr_data and pr_analytics.pr_versions created.")
 
 
 # --- Step 3: load JSON into StarRocks ---
@@ -524,11 +548,42 @@ def _collect_enriched_files(args) -> list[Path]:
     return files
 
 
+def load_versions(version_rows: list):
+    """Load version mappings into pr_versions via Stream Load."""
+    if not version_rows:
+        return
+    url = f"http://{SR_HOST}:{SR_HTTP_PORT}/api/{SR_DB}/pr_versions/_stream_load"
+    payload = json.dumps(version_rows)
+    auth = base64.b64encode(f"{SR_USER}:{SR_PASSWORD}".encode()).decode()
+    cmd = [
+        "curl", "-s", "-L", "--location-trusted",
+        "-X", "PUT",
+        "-H", f"Authorization: Basic {auth}",
+        "-H", "Content-Type: application/json",
+        "-H", "Expect: 100-continue",
+        "-H", "format: json",
+        "-H", "strip_outer_array: true",
+        "-d", "@-",
+        "--max-time", "120",
+        url,
+    ]
+    result = subprocess.run(cmd, input=payload, capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError(f"Stream Load pr_versions failed: {result.stderr}")
+    resp = json.loads(result.stdout)
+    status = resp.get("Status", "Unknown")
+    loaded = resp.get("NumberLoadedRows", 0)
+    print(f"  Stream Load pr_versions: Status={status}, Loaded={loaded} rows.")
+    if status not in ("Success", "Publish Timeout"):
+        print(f"  Full response: {json.dumps(resp, indent=2)}")
+
+
 def cmd_load(args):
     """Load enriched JSON files into StarRocks via Stream Load."""
     files = _collect_enriched_files(args)
 
     total_loaded = 0
+    all_versions = []
     for file_path in files:
         with open(file_path) as f:
             rows = json.load(f)
@@ -536,10 +591,60 @@ def cmd_load(args):
         load_to_starrocks(rows)
         total_loaded += len(rows)
 
+        # Collect version mappings (each PR gets its own version entry)
+        for row in rows:
+            all_versions.append({
+                "pr_number": row["pr_number"],
+                "version": row.get("version", "main"),
+                "backport_pr": None,
+            })
+
+    # Load version mappings
+    if all_versions:
+        print(f"\nLoading {len(all_versions)} version mappings ...")
+        load_versions(all_versions)
+
     print(f"\nDone! Total loaded: {total_loaded} rows from {len(files)} files")
 
 
-# --- Step 4: semantic search ---
+# --- Step 4: link backport versions ---
+
+def cmd_link_backport(args):
+    """Scan raw files, extract backport relationships, and load into pr_versions."""
+    files = _collect_raw_files(args)
+
+    version_rows = []
+    for file_path in files:
+        with open(file_path) as f:
+            raw_rows = json.load(f)
+        for row in raw_rows:
+            title = row.get("title", "")
+            source_prs = parse_backport(title)
+            if not source_prs:
+                continue
+            # This is a backport PR → extract its version and link to source PRs
+            version = row.get("version", "main")
+            if version == "main":
+                # Backport PRs should have a branch version; skip if still "main"
+                continue
+            backport_pr = row["pr_number"]
+            for src_pr in source_prs:
+                version_rows.append({
+                    "pr_number": src_pr,
+                    "version": version,
+                    "backport_pr": backport_pr,
+                })
+
+    if not version_rows:
+        print("No backport relationships found.")
+        return
+
+    print(f"Found {len(version_rows)} backport version mappings, loading into pr_versions ...")
+    load_versions(version_rows)
+    print("Done.")
+
+
+# --- Step 5: semantic search ---
 
 def cmd_search(args):
     """Semantic search PRs using vector index."""
@@ -691,6 +796,12 @@ def main():
     p_load.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
     p_load.add_argument("--until", type=str, help="End date (default: today)")
 
+    # link-backport: scan raw files and populate pr_versions with backport relationships
+    p_link = sub.add_parser("link-backport", help="Scan raw files and load backport version mappings into pr_versions")
+    p_link.add_argument("--file", type=str, help="Raw PR JSON file path")
+    p_link.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
+    p_link.add_argument("--until", type=str, help="End date (default: today)")
+
     # search
     p_search = sub.add_parser("search", help="Semantic search PRs")
     p_search.add_argument("query", help="Search query")
@@ -706,6 +817,8 @@ def main():
         cmd_init_table(args)
     elif args.command == "load":
         cmd_load(args)
+    elif args.command == "link-backport":
+        cmd_link_backport(args)
     elif args.command == "search":
         cmd_search(args)
 
