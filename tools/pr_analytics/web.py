@@ -70,31 +70,34 @@ def search_vector(query: str, top_k: int, filters: dict) -> list[dict]:
     vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
     where_clauses = [
-        f"approx_cosine_similarity(embedding, ARRAY<FLOAT>{vec_str}) >= 0.3"
+        f"approx_cosine_similarity(d.embedding, ARRAY<FLOAT>{vec_str}) >= 0.3"
     ]
+    join_clause = ""
     if filters.get("pr_number"):
-        where_clauses.append(f"pr_number = {int(filters['pr_number'])}")
+        where_clauses.append(f"d.pr_number = {int(filters['pr_number'])}")
     if filters.get("module"):
-        where_clauses.append(f"module = '{filters['module']}'")
+        where_clauses.append(f"d.module = '{filters['module']}'")
     if filters.get("change_type"):
-        where_clauses.append(f"change_type = '{filters['change_type']}'")
+        where_clauses.append(f"d.change_type = '{filters['change_type']}'")
     if filters.get("version"):
-        where_clauses.append(f"version = '{filters['version']}'")
+        join_clause = "JOIN pr_versions v ON d.pr_number = v.pr_number"
+        where_clauses.append(f"v.version = '{filters['version']}'")
     if filters.get("author"):
-        where_clauses.append(f"author = '{filters['author']}'")
+        where_clauses.append(f"d.author = '{filters['author']}'")
     if filters.get("since"):
-        where_clauses.append(f"merged_at >= '{filters['since']}'")
+        where_clauses.append(f"d.merged_at >= '{filters['since']}'")
     if filters.get("until"):
-        where_clauses.append(f"merged_at <= '{filters['until']} 23:59:59'")
+        where_clauses.append(f"d.merged_at <= '{filters['until']} 23:59:59'")
 
     where = " AND ".join(where_clauses)
 
     sql = f"""
 USE {SR_DB};
-SELECT pr_number, title, author, module, change_type, version,
-       ai_summary, ai_summary_en, merged_at, additions, deletions, changed_files,
-       approx_cosine_similarity(embedding, ARRAY<FLOAT>{vec_str}) AS score
-FROM pr_data
+SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
+       d.ai_summary, d.ai_summary_en, d.merged_at, d.additions, d.deletions, d.changed_files,
+       approx_cosine_similarity(d.embedding, ARRAY<FLOAT>{vec_str}) AS score
+FROM pr_data d
+{join_clause}
 WHERE {where}
 ORDER BY score DESC
 LIMIT {top_k};
@@ -104,32 +107,35 @@ LIMIT {top_k};
 
 def search_sql(filters: dict, top_k: int) -> list[dict]:
     where_clauses = ["1=1"]
+    join_clause = ""
     if filters.get("pr_number"):
-        where_clauses.append(f"pr_number = {int(filters['pr_number'])}")
+        where_clauses.append(f"d.pr_number = {int(filters['pr_number'])}")
     if filters.get("module"):
-        where_clauses.append(f"module = '{filters['module']}'")
+        where_clauses.append(f"d.module = '{filters['module']}'")
     if filters.get("change_type"):
-        where_clauses.append(f"change_type = '{filters['change_type']}'")
+        where_clauses.append(f"d.change_type = '{filters['change_type']}'")
     if filters.get("version"):
-        where_clauses.append(f"version = '{filters['version']}'")
+        join_clause = "JOIN pr_versions v ON d.pr_number = v.pr_number"
+        where_clauses.append(f"v.version = '{filters['version']}'")
     if filters.get("author"):
-        where_clauses.append(f"author = '{filters['author']}'")
+        where_clauses.append(f"d.author = '{filters['author']}'")
     if filters.get("since"):
-        where_clauses.append(f"merged_at >= '{filters['since']}'")
+        where_clauses.append(f"d.merged_at >= '{filters['since']}'")
     if filters.get("until"):
-        where_clauses.append(f"merged_at <= '{filters['until']} 23:59:59'")
+        where_clauses.append(f"d.merged_at <= '{filters['until']} 23:59:59'")
     if filters.get("keyword"):
         kw = filters["keyword"].replace("'", "''")
-        where_clauses.append(f"(lower(title) LIKE lower('%{kw}%') OR lower(ai_summary) LIKE lower('%{kw}%') OR lower(ai_summary_en) LIKE lower('%{kw}%'))")
+        where_clauses.append(f"(lower(d.title) LIKE lower('%{kw}%') OR lower(d.ai_summary) LIKE lower('%{kw}%') OR lower(d.ai_summary_en) LIKE lower('%{kw}%'))")
 
     where = " AND ".join(where_clauses)
     sql = f"""
 USE {SR_DB};
-SELECT pr_number, title, author, module, change_type, version,
-       ai_summary, ai_summary_en, merged_at, additions, deletions, changed_files
-FROM pr_data
+SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
+       d.ai_summary, d.ai_summary_en, d.merged_at, d.additions, d.deletions, d.changed_files
+FROM pr_data d
+{join_clause}
 WHERE {where}
-ORDER BY pr_number DESC
+ORDER BY d.pr_number DESC
 LIMIT {top_k};
 """
     return sr_query(sql)
@@ -150,10 +156,35 @@ FROM pr_data;
     return {}
 
 
+def fetch_pr_versions(pr_numbers: list) -> dict:
+    """Fetch all version mappings for given PR numbers. Returns {pr_number: [{version, backport_pr}, ...]}."""
+    if not pr_numbers:
+        return {}
+    in_list = ",".join(str(n) for n in pr_numbers)
+    rows = sr_query(f"USE {SR_DB}; SELECT pr_number, version, backport_pr FROM pr_versions WHERE pr_number IN ({in_list}) ORDER BY pr_number, version DESC;")
+    result = {}
+    for r in rows:
+        pn = int(r["pr_number"])
+        result.setdefault(pn, []).append({
+            "version": r["version"],
+            "backport_pr": int(r["backport_pr"]) if r.get("backport_pr") and r["backport_pr"] != "NULL" else None,
+        })
+    return result
+
+
+def attach_versions(results: list) -> list:
+    """Attach version list to each result row."""
+    pr_numbers = [int(r["pr_number"]) for r in results]
+    versions_map = fetch_pr_versions(pr_numbers)
+    for r in results:
+        r["versions"] = versions_map.get(int(r["pr_number"]), [])
+    return results
+
+
 def get_filter_options() -> dict:
     modules = sr_query(f"USE {SR_DB}; SELECT DISTINCT module FROM pr_data ORDER BY module;")
     types = sr_query(f"USE {SR_DB}; SELECT DISTINCT change_type FROM pr_data ORDER BY change_type;")
-    versions = sr_query(f"USE {SR_DB}; SELECT DISTINCT version FROM pr_data ORDER BY version DESC;")
+    versions = sr_query(f"USE {SR_DB}; SELECT DISTINCT version FROM pr_versions ORDER BY version DESC;")
     authors = sr_query(f"USE {SR_DB}; SELECT DISTINCT author FROM pr_data ORDER BY author;")
     return {
         "modules": [r["module"] for r in modules],
@@ -346,7 +377,11 @@ function renderResults(results, showScore) {
             <div class="result-header">
                 <span class="badge badge-type">${r.change_type || ''}</span>
                 <span class="badge badge-module">${r.module || ''}</span>
-                <span class="badge badge-version">${r.version || ''}</span>
+                ${(r.versions || []).map(v => {
+                    const prLink = v.backport_pr || r.pr_number;
+                    const url = 'https://github.com/' + REPO + '/pull/' + prLink;
+                    return '<a href="' + url + '" target="_blank" class="badge badge-version" style="text-decoration:none;">' + escHtml(v.version) + '</a>';
+                }).join('')}
                 ${scoreHtml}
             </div>
             <div class="meta">
@@ -435,7 +470,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         filters = {k: params.get(k, "") for k in
                    ("pr_number", "module", "change_type", "version", "author", "since", "until")}
         try:
-            results = search_vector(query, top_k, filters)
+            results = attach_versions(search_vector(query, top_k, filters))
             self._json({"results": results})
         except Exception as e:
             self._json({"error": str(e)}, 500)
@@ -445,7 +480,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         filters = {k: params.get(k, "") for k in
                    ("pr_number", "module", "change_type", "version", "author", "since", "until", "keyword")}
         try:
-            results = search_sql(filters, top_k)
+            results = attach_versions(search_sql(filters, top_k))
             self._json({"results": results})
         except Exception as e:
             self._json({"error": str(e)}, 500)
