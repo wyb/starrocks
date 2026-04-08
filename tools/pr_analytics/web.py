@@ -14,8 +14,8 @@ import http.client
 import http.server
 import json
 import os
-import subprocess
 import urllib.parse
+import pymysql
 
 # --- Config (reuse from pr.py) ---
 SR_HOST = os.getenv("SR_HOST", "127.0.0.1")
@@ -28,9 +28,6 @@ SR_DB = "pr_analytics"
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "localhost")
 OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
-
-MYSQL_BIN = os.getenv("MYSQL_BIN",
-                       "/usr/local/Cellar/mysql-client@5.7/5.7.29/bin/mysql")
 
 REPO = "StarRocks/starrocks"
 
@@ -50,19 +47,28 @@ def ollama_embed(text: str) -> list[float]:
         conn.close()
 
 
-def sr_query(sql: str) -> list[dict]:
-    cmd = [MYSQL_BIN, f"--host={SR_HOST}", f"--port={SR_PORT}",
-           f"--user={SR_USER}", "--batch", "--raw"]
-    if SR_PASSWORD:
-        cmd.append(f"--password={SR_PASSWORD}")
-    result = subprocess.run(cmd, input=sql, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr)
-    lines = result.stdout.strip().split("\n")
-    if len(lines) <= 1:
-        return []
-    headers = lines[0].split("\t")
-    return [dict(zip(headers, line.split("\t"))) for line in lines[1:]]
+def _get_conn():
+    return pymysql.connect(
+        host=SR_HOST,
+        port=int(SR_PORT),
+        user=SR_USER,
+        password=SR_PASSWORD,
+        database=SR_DB,
+        charset="utf8mb4",
+    )
+
+
+def sr_query(sql: str) -> list:
+    conn = _get_conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            for stmt in sql.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    cur.execute(stmt)
+            return cur.fetchall()
+    finally:
+        conn.close()
 
 
 def search_vector(query: str, top_k: int, filters: dict) -> list[dict]:
@@ -167,7 +173,7 @@ def fetch_pr_versions(pr_numbers: list) -> dict:
         pn = int(r["pr_number"])
         result.setdefault(pn, []).append({
             "version": r["version"],
-            "backport_pr": int(r["backport_pr"]) if r.get("backport_pr") and r["backport_pr"] != "NULL" else None,
+            "backport_pr": int(r["backport_pr"]) if r.get("backport_pr") else None,
         })
     return result
 
@@ -253,7 +259,8 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 .badge-score { background: #fef7e0; color: #b06000; }
 .meta { font-size: 13px; color: #666; margin-bottom: 6px; }
 .summary { font-size: 14px; color: #444; line-height: 1.5; }
-.score-bar { display: inline-block; height: 8px; background: #1a73e8; border-radius: 4px; }
+.score-bar-bg { display: inline-block; width: 60px; height: 6px; background: #e8eaed; border-radius: 3px; vertical-align: middle; position: relative; }
+.score-bar { display: block; height: 6px; background: #1a73e8; border-radius: 3px; position: absolute; top: 0; left: 0; }
 
 .loading { text-align: center; padding: 40px; color: #666; }
 .empty { text-align: center; padding: 40px; color: #999; }
@@ -365,7 +372,7 @@ function renderResults(results, showScore) {
         const prUrl = 'https://github.com/' + REPO + '/pull/' + r.pr_number;
         const scoreHtml = showScore && r.score
             ? `<span class="badge badge-score">score: ${parseFloat(r.score).toFixed(4)}</span>
-               <span class="score-bar" style="width:${Math.max(parseFloat(r.score)*100, 10)}px"></span>`
+               <span class="score-bar-bg"><span class="score-bar" style="width:${Math.max(parseFloat(r.score)*60, 4)}px"></span></span>`
             : '';
         html += `
         <div class="result-card">
@@ -498,7 +505,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
 
     def _json(self, data, code=200):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
