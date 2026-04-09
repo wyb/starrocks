@@ -174,4 +174,5 @@ UPDATE pr_data SET created_at = hours_add(created_at, 8), merged_at = hours_add(
 
 ## TODO
 
-1. 是否需要分析 PR 内容？有些 PR 没写 description（只能通过 title 生成摘要）或者 description 写的不全。
+1. 关键词过滤现在是用 like，支持倒排更好？
+2. 是否需要分析 PR 内容？有些 PR 没写 description（只能通过 title 生成摘要）或者 description 写的不全。
