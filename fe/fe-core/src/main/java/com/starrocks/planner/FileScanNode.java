@@ -63,6 +63,7 @@ import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.AggregateType;
 import com.starrocks.sql.ast.BrokerDesc;
 import com.starrocks.sql.ast.ImportColumnDesc;
+import com.starrocks.sql.ast.LoadStmt;
 import com.starrocks.sql.ast.expression.ArithmeticExpr;
 import com.starrocks.sql.ast.expression.Expr;
 import com.starrocks.sql.ast.expression.ExprUtils;
@@ -76,6 +77,7 @@ import com.starrocks.thrift.TBrokerFileStatus;
 import com.starrocks.thrift.TBrokerRangeDesc;
 import com.starrocks.thrift.TBrokerScanRange;
 import com.starrocks.thrift.TBrokerScanRangeParams;
+import com.starrocks.thrift.TEnvelopeType;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.thrift.TFileFormatType;
 import com.starrocks.thrift.TFileScanNode;
@@ -93,6 +95,7 @@ import com.starrocks.type.PrimitiveType;
 import com.starrocks.warehouse.cngroup.ComputeResource;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.parquet.Strings;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
@@ -366,10 +369,12 @@ public class FileScanNode extends LoadScanNode {
             columnsFromPath = context.fileGroup.getColumnsFromPath();
         }
 
+        // Json format type check does not need file path
+        boolean isLoadJson = Load.getFormatType(context.fileGroup.getFileFormat(), "") == TFileFormatType.FORMAT_JSON;
         Load.initColumns(targetTable, columnExprs,
                 context.fileGroup.getColumnToHadoopFunction(), context.exprMap, descriptorTable,
                 context.tupleDescriptor, context.slotDescByName, context.params, true,
-                useVectorizedLoad, columnsFromPath);
+                useVectorizedLoad, columnsFromPath, isLoadJson);
     }
 
     private void finalizeParams(ParamCreateContext context) throws StarRocksException, AnalysisException {
@@ -600,6 +605,14 @@ public class FileScanNode extends LoadScanNode {
             rangeDesc.setStrip_outer_array(jsonOptions.stripOuterArray);
             rangeDesc.setJsonpaths(jsonOptions.jsonPaths);
             rangeDesc.setJson_root(jsonOptions.jsonRoot);
+            if (!Strings.isNullOrEmpty(jsonOptions.envelope)) {
+                if (formatType != TFileFormatType.FORMAT_JSON) {
+                    throw new StarRocksException(LoadStmt.ENVELOPE + " can only be specified when format is json");
+                }
+                if (jsonOptions.envelope.equalsIgnoreCase(LoadStmt.ENVELOPE_DEBEZIUM)) {
+                    rangeDesc.setEnvelope(TEnvelopeType.DEBEZIUM);
+                }
+            }
 
             brokerScanRange(smallestLocations.first).addToRanges(rangeDesc);
             smallestLocations.second += rangeBytes;

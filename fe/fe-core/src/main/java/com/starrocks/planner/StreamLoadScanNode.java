@@ -64,6 +64,7 @@ import com.starrocks.system.ComputeNode;
 import com.starrocks.thrift.TBrokerRangeDesc;
 import com.starrocks.thrift.TBrokerScanRange;
 import com.starrocks.thrift.TBrokerScanRangeParams;
+import com.starrocks.thrift.TEnvelopeType;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.thrift.TFileFormatType;
 import com.starrocks.thrift.TFileScanNode;
@@ -392,6 +393,9 @@ public class StreamLoadScanNode extends LoadScanNode {
                     rangeDesc.setJson_root(streamLoadInfo.getJsonRoot());
                 }
                 rangeDesc.setStrip_outer_array(streamLoadInfo.isStripOuterArray());
+            }
+            if (streamLoadInfo.getEnvelope() != TEnvelopeType.NONE) {
+                rangeDesc.setEnvelope(streamLoadInfo.getEnvelope());
             }
             if (rangeDesc.format_type == TFileFormatType.FORMAT_AVRO) {
                 if (!streamLoadInfo.getJsonPaths().isEmpty()) {

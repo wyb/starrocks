@@ -15,6 +15,7 @@
 package com.starrocks.load.streamload;
 
 import com.starrocks.service.FrontendServiceImpl;
+import com.starrocks.thrift.TEnvelopeType;
 import com.starrocks.thrift.TFileFormatType;
 import com.starrocks.thrift.TFileType;
 import com.starrocks.thrift.TPartialUpdateMode;
@@ -190,5 +191,10 @@ public class StreamLoadThriftParams implements StreamLoadParams {
     @Override
     public Optional<Boolean> getStripOuterArray() {
         return request.isSetStrip_outer_array() ? Optional.of(request.isStrip_outer_array()) : Optional.empty();
+    }
+
+    @Override
+    public Optional<TEnvelopeType> getEnvelope() {
+        return request.isSetEnvelope() ? Optional.of(request.getEnvelope()) : Optional.empty();
     }
 }
