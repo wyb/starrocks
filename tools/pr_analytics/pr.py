@@ -72,7 +72,10 @@ ENRICHED_DIR = Path(__file__).parent / "data" / "enriched"
 
 def _fetch_prs_batch(since: str, until: str) -> list[dict]:
     """Fetch a single batch of PRs for a date range."""
-    date_range = f"merged:{since}..{until}"
+    # GitHub search uses UTC; shift -8h to compensate for UTC+8 timezone
+    utc_since = (datetime.strptime(since, "%Y-%m-%d") - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S")
+    utc_until = (datetime.strptime(until, "%Y-%m-%d") + timedelta(hours=24 - 8)).strftime("%Y-%m-%dT%H:%M:%S")
+    date_range = f"merged:{utc_since}..{utc_until}"
     cmd = [
         "gh", "pr", "list",
         "--repo", REPO,
@@ -251,9 +254,11 @@ def ollama_summarize(title: str, body: str) -> dict:
 
 
 def parse_dt(s: str | None) -> str | None:
+    """Parse ISO datetime string to 'YYYY-MM-DD HH:MM:SS' in UTC+8."""
     if not s:
         return None
-    return s.replace("T", " ").replace("Z", "")[:19]
+    dt = datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S") + timedelta(hours=8)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 # --- Step 1: fetch → process → save JSON ---
