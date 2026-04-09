@@ -141,7 +141,7 @@ SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
 FROM pr_data d
 {join_clause}
 WHERE {where}
-ORDER BY d.pr_number DESC
+ORDER BY d.merged_at DESC
 LIMIT {top_k};
 """
     return sr_query(sql)
