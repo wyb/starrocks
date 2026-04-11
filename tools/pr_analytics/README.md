@@ -101,9 +101,12 @@ python3 web.py --port 9090    # 自定义端口
 ```
 
 打开 `http://localhost:8888`，支持：
-- 语义搜索（自然语言，调 Ollama 生成 embedding）
-- 关键词过滤（SQL LIKE，匹配 title + 中英文摘要）
-- 筛选条件：PR# / Module / Type / Version / Author / 时间范围
+- **语义搜索**（自然语言，调 Ollama 生成 embedding）
+- **关键词过滤**（匹配 title + 中英文摘要）。支持四种模式切换：
+  - `自动`（默认）：优先使用 `LIKE` 匹配全字段，无结果则自动降级尝试 `MATCH_ALL`，最后尝试 `MATCH_ANY`。
+  - `LIKE`：标准 SQL 模糊匹配。
+  - `MATCH ALL` / `MATCH ANY`：使用 StarRocks 倒排索引分词匹配。倒排索引查询会按 `title` > `ai_summary` > `ai_summary_en` 的优先级逐个字段查询，匹配到即返回。
+- **筛选条件**：PR# / Module / Type / Version / Author / 时间范围
 - 每个 PR 展示所有关联版本（含 backport），版本号可点击跳转对应 PR
 
 ## 环境变量
@@ -166,13 +169,6 @@ data/
     └── ...
 ```
 
-## 时区处理
-最新已经支持 +8 时区
-```
-UPDATE pr_data SET created_at = hours_add(created_at, 8), merged_at = hours_add(merged_at, 8) where merged_dt <= "2026-04-07 21:22:58";
-```
-
 ## TODO
 
-1. 关键词过滤现在是用 like，支持倒排更好？
-2. 是否需要分析 PR 内容？有些 PR 没写 description（只能通过 title 生成摘要）或者 description 写的不全。
+1. 是否需要分析 PR 内容？有些 PR 没写 description（只能通过 title 生成摘要）或者 description 写的不全。
