@@ -30,6 +30,18 @@ pip install pymysql
 
 ## 使用流程
 
+### 常规工作流 (一键执行)
+
+包含以下 Step 1, 2, 4, 5 的所有步骤，适用于日常增量更新。
+
+```bash
+# 更新过去 1 天的数据
+python3 pr.py pipeline --days 1
+
+# 更新指定时间范围的数据
+python3 pr.py pipeline --since 2025-04-01 --until 2025-04-30
+```
+
 ### 1. 拉取 PR 原始数据
 
 按天存储，按周分批拉取（避免 GitHub API 限制），增量去重。

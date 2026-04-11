@@ -10,6 +10,10 @@ Prerequisites:
     pip install pymysql        # StarRocks 连接
 
 Usage:
+    # 常用：一键跑通全流程 (fetch + enrich + load + link-backport)
+    python3 pr.py pipeline --days 1
+    python3 pr.py pipeline --since 2025-04-01 --until 2025-04-30
+
     # Step 1: 拉取 PR 原始数据 (按天存储, 按周分批, 增量去重)
     python3 pr.py fetch --days 1
     python3 pr.py fetch --since 2025-04-01 --until 2025-04-30
@@ -260,6 +264,30 @@ def parse_dt(s: str | None) -> str | None:
     dt = datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S") + timedelta(hours=8)
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
+
+def cmd_pipeline(args):
+    """Execute full workflow: fetch → enrich → load → link-backport."""
+    since = args.since or (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
+    until = args.until or datetime.now().strftime("%Y-%m-%d")
+
+    print(f">>> Starting Pipeline [{since} .. {until}] ...")
+
+    print("\n--- [1/4] Fetching raw PR data ---")
+    cmd_fetch(args)
+
+    print("\n--- [2/4] Generating AI summaries and embeddings (enrich) ---")
+    # cmd_enrich needs file=None to use since/until logic
+    args.file = None
+    args.output = None
+    cmd_enrich(args)
+
+    print("\n--- [3/4] Loading enriched data into StarRocks ---")
+    cmd_load(args)
+
+    print("\n--- [4/4] Linking backport versions ---")
+    cmd_link_backport(args)
+
+    print(f"\n>>> Pipeline Completed Successfully [{since} .. {until}].")
 
 # --- Step 1: fetch → process → save JSON ---
 
@@ -796,6 +824,13 @@ def main():
     parser = argparse.ArgumentParser(description="StarRocks PR Analytics (Ollama)")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # pipeline: fetch → enrich → load → link-backport
+    p_pipe = sub.add_parser("pipeline", help="Run full pipeline: fetch → enrich → load → link-backport")
+    p_pipe.add_argument("--days", type=int, default=1, help="Last N days")
+    p_pipe.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
+    p_pipe.add_argument("--until", type=str, help="End date, e.g. today")
+    p_pipe.add_argument("--reverse", action="store_true", help="Process enrich in reverse order")
+
     # fetch: pull raw PR data from GitHub
     p_fetch = sub.add_parser("fetch", help="Fetch raw PR data from GitHub → save JSON")
     p_fetch.add_argument("--days", type=int, default=1, help="Fetch PRs from last N days (ignored if --since is set)")
@@ -845,6 +880,8 @@ def main():
         cmd_link_backport(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "pipeline":
+        cmd_pipeline(args)
 
 
 if __name__ == "__main__":
