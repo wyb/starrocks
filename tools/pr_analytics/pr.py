@@ -323,7 +323,7 @@ def cmd_fetch(args):
             new_rows = day_rows
 
         with open(out_file, "w") as f:
-            json.dump(day_rows, f, ensure_ascii=False)
+            json.dump(day_rows, f, ensure_ascii=False, indent=2)
 
         if new_rows:
             print(f"\n  {out_file.name}: {len(new_rows)} new, {len(day_rows)} total")
@@ -435,7 +435,7 @@ def _enrich_file(file_path: Path, output: Path = None):
 
         # Save progress after each PR (resume-friendly)
         with open(out_file, "w") as f:
-            json.dump(enriched_rows, f, ensure_ascii=False)
+            json.dump(enriched_rows, f, ensure_ascii=False, indent=2)
 
     print(f"  {out_file.name}: enriched {new_count}, skipped backport {skip_backport}, skipped existing {total - new_count - skip_backport}")
     return new_count
@@ -465,10 +465,14 @@ def cmd_enrich(args):
 
 def cmd_init_table(args):
     """Create database and table with vector index."""
+    print("Creating database and tables ...")
+    ddl = f"CREATE DATABASE IF NOT EXISTS {SR_DB}"
+    sr_execute_sql(ddl, database=None)
+
     if not args.force:
         # Check if table already exists
         try:
-            rows = sr_query(f"USE {SR_DB}; SHOW TABLES LIKE 'pr_data'")
+            rows = sr_query(f"SHOW TABLES LIKE 'pr_data'")
             if rows:
                 print(f"Error: Table {SR_DB}.pr_data already exists. Use --force to drop and recreate.")
                 sys.exit(1)
@@ -478,9 +482,6 @@ def cmd_init_table(args):
     drop_data = "DROP TABLE IF EXISTS pr_data;" if args.force else ""
     drop_versions = "DROP TABLE IF EXISTS pr_versions;" if args.force else ""
     ddl = f"""
-CREATE DATABASE IF NOT EXISTS {SR_DB};
-USE {SR_DB};
-
 {drop_data}
 
 CREATE TABLE pr_data (
@@ -506,7 +507,10 @@ CREATE TABLE pr_data (
         "is_vector_normed" = "false",
         "M" = "16",
         "dim" = "{EMBEDDING_DIM}"
-    )
+    ),
+    INDEX title_idx (title) USING GIN("parser" = "english", "imp_lib" = "builtin"),
+    INDEX summary_idx (ai_summary) USING GIN("parser" = "chinese", "imp_lib" = "builtin"),
+    INDEX summary_en_idx (ai_summary_en) USING GIN("parser" = "english", "imp_lib" = "builtin")
 ) ENGINE = OLAP
 PRIMARY KEY(pr_number)
 DISTRIBUTED BY HASH(pr_number) BUCKETS 1
@@ -523,7 +527,6 @@ PRIMARY KEY(pr_number, version)
 DISTRIBUTED BY HASH(pr_number) BUCKETS 1
 PROPERTIES("replication_num" = "1");
 """
-    print("Creating database and tables ...")
     sr_execute_sql(ddl)
     print("  Done. Tables pr_analytics.pr_data and pr_analytics.pr_versions created.")
 
@@ -669,7 +672,6 @@ def cmd_search(args):
     vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
 
     sql = f"""
-USE {SR_DB};
 SELECT pr_number, title, author, module, change_type, version, ai_summary, ai_summary_en, merged_at,
        approx_cosine_similarity(embedding, ARRAY<FLOAT>{vec_str}) AS score
 FROM pr_data
@@ -711,21 +713,21 @@ LIMIT {top_k};
 
 # --- StarRocks Helpers ---
 
-def _get_conn():
+def _get_conn(database=SR_DB):
     """Get a pymysql connection to StarRocks."""
     return pymysql.connect(
         host=SR_HOST,
         port=int(SR_PORT),
         user=SR_USER,
         password=SR_PASSWORD,
-        database=SR_DB,
+        database=database,
         charset="utf8mb4",
     )
 
 
-def sr_execute_sql(sql: str):
+def sr_execute_sql(sql: str, database=SR_DB):
     """Execute one or more SQL statements via pymysql."""
-    conn = _get_conn()
+    conn = _get_conn(database=database)
     try:
         with conn.cursor() as cur:
             for stmt in sql.split(";"):
@@ -737,9 +739,9 @@ def sr_execute_sql(sql: str):
         conn.close()
 
 
-def sr_query(sql: str) -> list:
+def sr_query(sql: str, database=SR_DB) -> list:
     """Execute SQL and return list of dicts."""
-    conn = _get_conn()
+    conn = _get_conn(database=database)
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             for stmt in sql.split(";"):
