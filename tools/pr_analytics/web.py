@@ -216,7 +216,6 @@ def get_stats() -> dict:
     rows = sr_query(f"""
 SELECT COUNT(*) AS total,
        COUNT(DISTINCT author) AS authors,
-       COUNT(DISTINCT module) AS modules,
        MIN(merged_at) AS earliest,
        MAX(merged_at) AS latest
 FROM pr_data;
@@ -549,7 +548,6 @@ async function init() {
             se.innerHTML = `
                 <div class="stat-card"><div class="num">${stats.total || 0}</div><div class="label">Total PRs</div></div>
                 <div class="stat-card"><div class="num">${stats.authors || 0}</div><div class="label">Contributors</div></div>
-                <div class="stat-card"><div class="num">${stats.modules || 0}</div><div class="label">Modules</div></div>
                 <div class="stat-card"><div class="num">${stats.earliest || '-'}</div><div class="label">Earliest</div></div>
                 <div class="stat-card"><div class="num">${stats.latest || '-'}</div><div class="label">Latest</div></div>`;
         }
