@@ -287,11 +287,17 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
                                           border-radius: 6px; font-size: 13px; outline: none; }
 .filters label, .filters-row label { font-size: 13px; color: #666; font-weight: 500; }
 
-.filter-container { background: #f8f9fa; padding: 16px; border-radius: 8px; border: 1px solid #eee; margin-top: 15px; position: relative; }
+.filter-container { background: #f8f9fa; padding: 16px; border-radius: 8px; border: 1px solid #eee; margin-top: 15px; position: relative; transition: all 0.3s ease; overflow: hidden; }
+.filter-container.collapsed { display: none; }
 .filter-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .filter-title { font-size: 13px; font-weight: bold; color: #555; }
 .reset-link { font-size: 12px; color: #1a73e8; cursor: pointer; text-decoration: none; }
 .reset-link:hover { text-decoration: underline; }
+
+.toggle-filters { font-size: 13px; color: #666; cursor: pointer; display: flex; align-items: center; gap: 4px; padding: 0 10px; }
+.toggle-filters:hover { color: #1a73e8; }
+.toggle-filters i { border: solid #666; border-width: 0 2px 2px 0; display: inline-block; padding: 3px; transform: rotate(45deg); transition: transform 0.3s; }
+.toggle-filters.active i { transform: rotate(-135deg); }
 
 .divider { border-top: 1px solid #e0e0e0; margin: 12px 0; }
 
@@ -339,9 +345,10 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
             <input type="text" id="query" placeholder="搜索描述或关键词...">
             <button onclick="doSearch()">语义搜索</button>
             <button class="secondary" onclick="doFilter()">关键词过滤</button>
+            <div class="toggle-filters" id="toggle_btn" onclick="toggleFilters()">展开筛选<i></i></div>
         </div>
 
-        <div class="filter-container">
+        <div class="filter-container collapsed" id="filter_container">
             <div class="filter-header">
                 <span class="filter-title">筛选</span>
                 <a class="reset-link" onclick="resetFilters()">重置条件</a>
@@ -405,6 +412,14 @@ async function api(path, params) {
     return resp.json();
 }
 
+function toggleFilters() {
+    const container = document.getElementById('filter_container');
+    const btn = document.getElementById('toggle_btn');
+    const isCollapsed = container.classList.toggle('collapsed');
+    btn.classList.toggle('active', !isCollapsed);
+    btn.innerHTML = (isCollapsed ? '展开筛选' : '收起筛选') + '<i></i>';
+}
+
 function setMatchMode(val) {
     document.getElementById('f_match_mode').value = val;
     document.querySelectorAll('#match_mode_control .segment').forEach(el => {
@@ -417,7 +432,6 @@ function resetFilters() {
     ['f_module', 'f_type', 'f_version', 'f_author'].forEach(id => document.getElementById(id).selectedIndex = 0);
     document.getElementById('f_top').value = '20';
     setMatchMode('auto');
-    document.getElementById('query').value = '';
 }
 
 function getFilters() {
