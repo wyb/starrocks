@@ -47,19 +47,19 @@ def ollama_embed(text: str) -> list[float]:
         conn.close()
 
 
-def _get_conn():
+def _get_conn(database=SR_DB):
     return pymysql.connect(
         host=SR_HOST,
         port=int(SR_PORT),
         user=SR_USER,
         password=SR_PASSWORD,
-        database=SR_DB,
+        database=database,
         charset="utf8mb4",
     )
 
 
-def sr_query(sql: str) -> list:
-    conn = _get_conn()
+def sr_query(sql: str, database=SR_DB) -> list:
+    conn = _get_conn(database=database)
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             for stmt in sql.split(";"):
@@ -98,7 +98,6 @@ def search_vector(query: str, top_k: int, filters: dict) -> list[dict]:
     where = " AND ".join(where_clauses)
 
     sql = f"""
-USE {SR_DB};
 SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
        d.ai_summary, d.ai_summary_en, d.merged_at, d.additions, d.deletions, d.changed_files,
        approx_cosine_similarity(d.embedding, ARRAY<FLOAT>{vec_str}) AS score
@@ -112,44 +111,93 @@ LIMIT {top_k};
 
 
 def search_sql(filters: dict, top_k: int) -> list[dict]:
-    where_clauses = ["1=1"]
-    join_clause = ""
-    if filters.get("pr_number"):
-        where_clauses.append(f"d.pr_number = {int(filters['pr_number'])}")
-    if filters.get("module"):
-        where_clauses.append(f"d.module = '{filters['module']}'")
-    if filters.get("change_type"):
-        where_clauses.append(f"d.change_type = '{filters['change_type']}'")
-    if filters.get("version"):
-        join_clause = "JOIN pr_versions v ON d.pr_number = v.pr_number"
-        where_clauses.append(f"v.version = '{filters['version']}'")
-    if filters.get("author"):
-        where_clauses.append(f"d.author = '{filters['author']}'")
-    if filters.get("since"):
-        where_clauses.append(f"d.merged_at >= '{filters['since']}'")
-    if filters.get("until"):
-        where_clauses.append(f"d.merged_at <= '{filters['until']} 23:59:59'")
-    if filters.get("keyword"):
-        kw = filters["keyword"].replace("'", "''")
-        where_clauses.append(f"(lower(d.title) LIKE lower('%{kw}%') OR lower(d.ai_summary) LIKE lower('%{kw}%') OR lower(d.ai_summary_en) LIKE lower('%{kw}%'))")
+    def build_where_clause(mode, field, kw):
+        clauses = ["1=1"]
+        if filters.get("pr_number"):
+            clauses.append(f"d.pr_number = {int(filters['pr_number'])}")
+        if filters.get("module"):
+            clauses.append(f"d.module = '{filters['module']}'")
+        if filters.get("change_type"):
+            clauses.append(f"d.change_type = '{filters['change_type']}'")
+        if filters.get("author"):
+            clauses.append(f"d.author = '{filters['author']}'")
+        if filters.get("since"):
+            clauses.append(f"d.merged_at >= '{filters['since']}'")
+        if filters.get("until"):
+            clauses.append(f"d.merged_at <= '{filters['until']} 23:59:59'")
 
-    where = " AND ".join(where_clauses)
-    sql = f"""
-USE {SR_DB};
+        if mode == "like":
+            clauses.append(f"(lower(d.title) LIKE lower('%{kw}%') OR lower(d.ai_summary) LIKE lower('%{kw}%') OR lower(d.ai_summary_en) LIKE lower('%{kw}%'))")
+        elif mode == "all":
+            clauses.append(f"d.{field} MATCH_ALL '{kw}'")
+        elif mode == "any":
+            clauses.append(f"d.{field} MATCH_ANY '{kw}'")
+
+        return " AND ".join(clauses)
+
+    def execute(where_stmt):
+        join_clause = ""
+        v_filter = ""
+        if filters.get("version"):
+            join_clause = "JOIN pr_versions v ON d.pr_number = v.pr_number"
+            v_filter = f" AND v.version = '{filters['version']}'"
+
+        sql = f"""
 SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
        d.ai_summary, d.ai_summary_en, d.merged_at, d.additions, d.deletions, d.changed_files
 FROM pr_data d
 {join_clause}
-WHERE {where}
+WHERE {where_stmt} {v_filter}
 ORDER BY d.merged_at DESC
 LIMIT {top_k};
 """
-    return sr_query(sql)
+        return sr_query(sql)
+
+    kw = filters.get("keyword", "").replace("'", "''")
+    mode = filters.get("match_mode", "auto")
+
+    if not kw:
+        return execute(build_where_clause("none", None, ""))
+
+    # Mode: LIKE
+    if mode == "like":
+        return execute(build_where_clause("like", None, kw))
+
+    # Mode: MATCH ALL
+    if mode == "all":
+        for field in ["title", "ai_summary", "ai_summary_en"]:
+            res = execute(build_where_clause("all", field, kw))
+            if res: return res
+        return []
+
+    # Mode: MATCH ANY
+    if mode == "any":
+        for field in ["title", "ai_summary", "ai_summary_en"]:
+            res = execute(build_where_clause("any", field, kw))
+            if res: return res
+        return []
+
+    # Mode: AUTO (LIKE -> ALL -> ANY)
+    # 1. Try LIKE
+    res = execute(build_where_clause("like", None, kw))
+    if res: return res
+
+    # 2. Try MATCH ALL (Priority)
+    for field in ["title", "ai_summary", "ai_summary_en"]:
+        res = execute(build_where_clause("all", field, kw))
+        if res: return res
+
+    # 3. Try MATCH ANY (Priority)
+    for field in ["title", "ai_summary", "ai_summary_en"]:
+        res = execute(build_where_clause("any", field, kw))
+        if res: return res
+
+    return []
+
 
 
 def get_stats() -> dict:
     rows = sr_query(f"""
-USE {SR_DB};
 SELECT COUNT(*) AS total,
        COUNT(DISTINCT author) AS authors,
        COUNT(DISTINCT module) AS modules,
@@ -167,7 +215,7 @@ def fetch_pr_versions(pr_numbers: list) -> dict:
     if not pr_numbers:
         return {}
     in_list = ",".join(str(n) for n in pr_numbers)
-    rows = sr_query(f"USE {SR_DB}; SELECT pr_number, version, backport_pr FROM pr_versions WHERE pr_number IN ({in_list}) ORDER BY pr_number, version DESC;")
+    rows = sr_query(f"SELECT pr_number, version, backport_pr FROM pr_versions WHERE pr_number IN ({in_list}) ORDER BY pr_number, version DESC;")
     result = {}
     for r in rows:
         pn = int(r["pr_number"])
@@ -188,10 +236,10 @@ def attach_versions(results: list) -> list:
 
 
 def get_filter_options() -> dict:
-    modules = sr_query(f"USE {SR_DB}; SELECT DISTINCT module FROM pr_data ORDER BY module;")
-    types = sr_query(f"USE {SR_DB}; SELECT DISTINCT change_type FROM pr_data ORDER BY change_type;")
-    versions = sr_query(f"USE {SR_DB}; SELECT DISTINCT version FROM pr_versions ORDER BY version DESC;")
-    authors = sr_query(f"USE {SR_DB}; SELECT DISTINCT author FROM pr_data ORDER BY author;")
+    modules = sr_query(f"SELECT DISTINCT module FROM pr_data ORDER BY module;")
+    types = sr_query(f"SELECT DISTINCT change_type FROM pr_data ORDER BY change_type;")
+    versions = sr_query(f"SELECT DISTINCT version FROM pr_versions ORDER BY version DESC;")
+    authors = sr_query(f"SELECT DISTINCT author FROM pr_data ORDER BY author;")
     return {
         "modules": [r["module"] for r in modules],
         "change_types": [r["change_type"] for r in types],
@@ -229,15 +277,28 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 .search-row button { padding: 10px 24px; background: #1a73e8; color: #fff; border: none;
                      border-radius: 8px; cursor: pointer; font-size: 15px; white-space: nowrap; }
 .search-row button:hover { background: #1557b0; }
-.search-row button.secondary { background: #5f6368; }
-.search-row button.secondary:hover { background: #3c4043; }
+.search-row button.secondary { background: #34a853; }
+.search-row button.secondary:hover { background: #2d8e47; }
 
 .filters { display: flex; gap: 10px; align-items: center; }
 .filters-row { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
 .filters select, .filters input,
 .filters-row select, .filters-row input { padding: 6px 10px; border: 1px solid #ddd;
                                           border-radius: 6px; font-size: 13px; outline: none; }
-.filters label, .filters-row label { font-size: 13px; color: #666; }
+.filters label, .filters-row label { font-size: 13px; color: #666; font-weight: 500; }
+
+.filter-container { background: #f8f9fa; padding: 16px; border-radius: 8px; border: 1px solid #eee; margin-top: 15px; position: relative; }
+.filter-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.filter-title { font-size: 13px; font-weight: bold; color: #555; }
+.reset-link { font-size: 12px; color: #1a73e8; cursor: pointer; text-decoration: none; }
+.reset-link:hover { text-decoration: underline; }
+
+.divider { border-top: 1px solid #e0e0e0; margin: 12px 0; }
+
+.segmented-control { display: inline-flex; background: #eee; padding: 2px; border-radius: 6px; }
+.segment { padding: 4px 12px; font-size: 12px; cursor: pointer; border-radius: 4px; color: #666; transition: all 0.2s; }
+.segment:hover { color: #333; }
+.segment.active { background: #fff; color: #1a73e8; font-weight: bold; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 
 .tab-bar { display: flex; gap: 0; margin-bottom: 0; }
 .tab { padding: 8px 20px; cursor: pointer; border: 1px solid #ddd; border-bottom: none;
@@ -275,35 +336,58 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 
     <div class="search-box">
         <div class="search-row">
-            <input type="text" id="query" placeholder="语义搜索: 输入自然语言描述, 如 '物化视图刷新'">
+            <input type="text" id="query" placeholder="搜索描述或关键词...">
             <button onclick="doSearch()">语义搜索</button>
             <button class="secondary" onclick="doFilter()">关键词过滤</button>
         </div>
-        <div class="filters">
-            <label>PR:</label>
-            <input type="text" id="f_pr_number" placeholder="66666" style="width:80px;">
-            <label>Module:</label>
-            <select id="f_module"><option value="">全部</option></select>
-            <label>Type:</label>
-            <select id="f_type"><option value="">全部</option></select>
-            <label>Version:</label>
-            <select id="f_version"><option value="">全部</option></select>
-            <label>Author:</label>
-            <select id="f_author"><option value="">全部</option></select>
-        </div>
-        <div class="filters-row">
-            <label>Since:</label>
-            <input type="date" id="f_since">
-            <label>Until:</label>
-            <input type="date" id="f_until">
-            <label>Top:</label>
-            <select id="f_top">
-                <option value="10">10</option>
-                <option value="20" selected>20</option>
-                <option value="50">50</option>
-                <option value="100">100</option>
-                <option value="99999">不限</option>
-            </select>
+
+        <div class="filter-container">
+            <div class="filter-header">
+                <span class="filter-title">筛选</span>
+                <a class="reset-link" onclick="resetFilters()">重置条件</a>
+            </div>
+
+            <div class="filters">
+                <label>PR:</label>
+                <input type="text" id="f_pr_number" placeholder="66666" style="width:80px;">
+                <label>Module:</label>
+                <select id="f_module"><option value="">全部</option></select>
+                <label>Type:</label>
+                <select id="f_type"><option value="">全部</option></select>
+                <label>Version:</label>
+                <select id="f_version"><option value="">全部</option></select>
+                <label>Author:</label>
+                <select id="f_author"><option value="">全部</option></select>
+            </div>
+
+            <div class="filters-row">
+                <label>Since:</label>
+                <input type="date" id="f_since">
+                <label>Until:</label>
+                <input type="date" id="f_until">
+                <label>Top:</label>
+                <select id="f_top">
+                    <option value="10">10</option>
+                    <option value="20" selected>20</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="99999">不限</option>
+                </select>
+            </div>
+
+            <div class="divider"></div>
+            <div class="filter-title" style="margin-bottom:10px;">关键字过滤</div>
+
+            <div class="filters-row">
+                <label>模式:</label>
+                <div class="segmented-control" id="match_mode_control">
+                    <div class="segment active" data-value="auto" onclick="setMatchMode('auto')">自动</div>
+                    <div class="segment" data-value="like" onclick="setMatchMode('like')">LIKE</div>
+                    <div class="segment" data-value="all" onclick="setMatchMode('all')">MATCH ALL</div>
+                    <div class="segment" data-value="any" onclick="setMatchMode('any')">MATCH ANY</div>
+                </div>
+                <input type="hidden" id="f_match_mode" value="auto">
+            </div>
         </div>
     </div>
 
@@ -321,6 +405,21 @@ async function api(path, params) {
     return resp.json();
 }
 
+function setMatchMode(val) {
+    document.getElementById('f_match_mode').value = val;
+    document.querySelectorAll('#match_mode_control .segment').forEach(el => {
+        el.classList.toggle('active', el.dataset.value === val);
+    });
+}
+
+function resetFilters() {
+    ['f_pr_number', 'f_since', 'f_until'].forEach(id => document.getElementById(id).value = '');
+    ['f_module', 'f_type', 'f_version', 'f_author'].forEach(id => document.getElementById(id).selectedIndex = 0);
+    document.getElementById('f_top').value = '20';
+    setMatchMode('auto');
+    document.getElementById('query').value = '';
+}
+
 function getFilters() {
     return {
         "pr_number": document.getElementById('f_pr_number').value.trim(),
@@ -331,6 +430,7 @@ function getFilters() {
         since: document.getElementById('f_since').value,
         until: document.getElementById('f_until').value,
         top: document.getElementById('f_top').value,
+        match_mode: document.getElementById('f_match_mode').value,
     };
 }
 
@@ -485,7 +585,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _handle_filter(self, params):
         top_k = int(params.get("top", 50))
         filters = {k: params.get(k, "") for k in
-                   ("pr_number", "module", "change_type", "version", "author", "since", "until", "keyword")}
+                   ("pr_number", "module", "change_type", "version", "author", "since", "until", "keyword", "match_mode")}
         try:
             results = attach_versions(search_sql(filters, top_k))
             self._json({"results": results})
