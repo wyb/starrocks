@@ -13,9 +13,25 @@ import base64
 import http.client
 import http.server
 import json
+import logging
 import os
 import urllib.parse
+from pathlib import Path
 import pymysql
+
+# --- Logging Setup ---
+LOG_DIR = Path(__file__).parent / "log"
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / "web.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8")
+    ]
+)
+logger = logging.getLogger("web_ui")
 
 # --- Config (reuse from pr.py) ---
 SR_HOST = os.getenv("SR_HOST", "127.0.0.1")
@@ -635,7 +651,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format, *args):
-        print(f"  {self.address_string()} - {format % args}")
+        logger.info(f"{self.address_string()} {format % args}")
 
 
 def main():
@@ -645,14 +661,14 @@ def main():
     args = parser.parse_args()
 
     server = http.server.HTTPServer((args.host, args.port), Handler)
-    print(f"PR Analytics Web UI running at http://localhost:{args.port}")
-    print(f"  StarRocks: {SR_HOST}:{SR_PORT}")
-    print(f"  Ollama:    {OLLAMA_HOST}:{OLLAMA_PORT}")
-    print(f"  Press Ctrl+C to stop")
+    logger.info(f"PR Analytics Web UI running at http://localhost:{args.port}")
+    logger.info(f"  StarRocks: {SR_HOST}:{SR_PORT}")
+    logger.info(f"  Ollama:    {OLLAMA_HOST}:{OLLAMA_PORT}")
+    logger.info(f"  Press Ctrl+C to stop")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopped.")
+        logger.info("Stopped.")
         server.server_close()
 
 
