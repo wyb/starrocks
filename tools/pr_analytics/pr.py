@@ -125,21 +125,46 @@ def fetch_prs(since: str, until: str = None) -> list[dict]:
     return all_prs
 
 
-def parse_change_type(title: str) -> str:
-    m = re.match(r"\[(\w+(?:[-/]\w+)?)\]", title)
-    if m:
-        tag = m.group(1).lower()
-        mapping = {
-            "bugfix": "BugFix", "bug": "BugFix", "fix": "BugFix",
-            "feature": "Feature", "feat": "Feature",
-            "enhancement": "Enhancement", "improve": "Enhancement",
-            "refactor": "Refactor",
-            "ut": "UT", "test": "UT",
-            "doc": "Doc", "docs": "Doc",
-            "tool": "Tool", "build": "Tool", "ci": "Tool",
-            "chore": "Chore",
-        }
-        return mapping.get(tag, tag.capitalize())
+def parse_change_type(title: str, body: str) -> str:
+    mapping = {
+        "bugfix": "BugFix", "bug fix": "BugFix", "bug": "BugFix", "fix": "BugFix",
+        "feature": "Feature", "new feature": "Feature", "feat": "Feature",
+        "enhancement": "Enhancement", "improve": "Enhancement", "optimize": "Enhancement",
+        "refactor": "Refactor", "refact": "Refactor",
+        "ut": "UT", "unit test": "UT", "test": "UT", "tests": "UT",
+        "doc": "Doc", "docs": "Doc", "documentation": "Doc",
+        "tool": "Tool", "tools": "Tool", "build": "Tool", "ci": "Tool",
+    }
+
+    # 1. Try to extract from body checklist: ## What type of PR is this:
+    if body:
+        # Extract content between "What type of PR is this:" and "Does this PR entail a change in behavior?"
+        m = re.search(r"## What type of PR is this:.*?\n(.*?)(?=Does this PR entail a change in behavior\?|##|\Z)", body, re.DOTALL | re.IGNORECASE)
+        if m:
+            content = m.group(1)
+            # Find the first checked item: - [x] Type
+            checked = re.search(r"-\s*\[[xX]\]\s*(.*)", content)
+            if checked:
+                val = checked.group(1).strip().lower()
+                # Find matching key in mapping
+                for k, v in mapping.items():
+                    if k in val:
+                        return v
+                return val.capitalize()
+
+    # 2. Fallback to title tags [BugFix][Feature] etc.
+    # Find all tags like [Feature], [BugFix], [branch-3.1]
+    tags = re.findall(r"\[([^\]]+)\]", title)
+    for tag in tags:
+        tag_lower = tag.strip().lower()
+        # Direct match in mapping
+        if tag_lower in mapping:
+            return mapping[tag_lower]
+        # Partial match in mapping
+        for k, v in mapping.items():
+            if k in tag_lower:
+                return v
+
     return "Other"
 
 
@@ -321,7 +346,7 @@ def cmd_fetch(args):
             "deletions": pr.get("deletions", 0),
             "changed_files": len(pr.get("files") or []) or pr.get("changedFiles", 0),
             "module": infer_module(pr),
-            "change_type": parse_change_type(title),
+            "change_type": parse_change_type(title, body),
             "version": infer_version(labels),
             "body": body[:10000],
         }
