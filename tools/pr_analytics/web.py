@@ -424,7 +424,11 @@ const REPO = '__REPO__';
 async function api(path, params) {
     const qs = new URLSearchParams(params).toString();
     const resp = await fetch('/api/' + path + '?' + qs);
-    return resp.json();
+    const data = await resp.json();
+    if (!resp.ok) {
+        throw new Error(data.error || resp.statusText);
+    }
+    return data;
 }
 
 function toggleFilters() {
