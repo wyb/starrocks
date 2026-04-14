@@ -171,8 +171,8 @@ private:
 
     // CDC envelope type
     TEnvelopeType::type _envelope_type = TEnvelopeType::NONE;
-    // CDC operation for current row: 0 = upsert, 1 = delete
-    uint8_t _cdc_op = 0;
+    // CDC operation for current row: 0 = upsert, 1 = delete; 0xFF = sentinel (not yet set this row)
+    uint8_t _cdc_op = 0xFF;
 };
 
 } // namespace starrocks

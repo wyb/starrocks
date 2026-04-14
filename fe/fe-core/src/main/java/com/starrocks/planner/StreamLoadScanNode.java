@@ -39,7 +39,9 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.FunctionSet;
+import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
+import com.starrocks.sql.ast.KeysType;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.CsvFormat;
@@ -208,6 +210,13 @@ public class StreamLoadScanNode extends LoadScanNode {
 
     // Called from init, construct source tuple information
     private void initParams() throws StarRocksException {
+        if (streamLoadInfo.getEnvelope() == TEnvelopeType.DEBEZIUM
+                && dstTable instanceof OlapTable
+                && ((OlapTable) dstTable).getKeysType() != KeysType.PRIMARY_KEYS) {
+            throw new StarRocksException(
+                    "envelope=debezium is only supported on PRIMARY KEY tables");
+        }
+
         TBrokerScanRangeParams params = new TBrokerScanRangeParams();
         paramCreateContext.params = params;
 

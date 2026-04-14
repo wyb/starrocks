@@ -438,6 +438,8 @@ Status JsonReader::_read_rows(Chunk* chunk, int32_t rows_to_read, int32_t* rows_
     auto parser = down_cast<ParserType*>(_parser.get());
 
     while (*rows_read < rows_to_read) {
+        // Reset to sentinel so any stale read of _cdc_op is caught by DCHECK.
+        _cdc_op = 0xFF;
         auto st = parser->get_current(&row);
         if (!st.ok()) {
             if (st.is_end_of_file()) {
@@ -584,6 +586,7 @@ Status JsonReader::_construct_row_without_jsonpath(simdjson::ondemand::object* r
             if (UNLIKELY(i == _op_col_index)) {
                 // special treatment for __op column, fill default value rather than null.
                 // For Debezium CDC format, use the op from the CDC envelope (0=upsert, 1=delete).
+                DCHECK(_envelope_type != TEnvelopeType::DEBEZIUM || _cdc_op != 0xFF);
                 uint8_t op_val = _envelope_type != TEnvelopeType::NONE ? _cdc_op : 0;
                 if (column->is_binary()) {
                     column->append_strings(&kCdcOpSlices[op_val], 1);
@@ -613,6 +616,7 @@ Status JsonReader::_construct_row_with_jsonpath(simdjson::ondemand::object* row,
             if (column_name.compare("__op") == 0) {
                 // special treatment for __op column, fill default value rather than null.
                 // For Debezium CDC format, use the op from the CDC envelope.
+                DCHECK(_envelope_type != TEnvelopeType::DEBEZIUM || _cdc_op != 0xFF);
                 uint8_t op_val = _envelope_type != TEnvelopeType::NONE ? _cdc_op : 0;
                 if (column->is_binary()) {
                     column->append_strings(&kCdcOpSlices[op_val], 1);
@@ -647,6 +651,7 @@ Status JsonReader::_construct_row_with_jsonpath(simdjson::ondemand::object* row,
                 if (column_name.compare("__op") == 0) {
                     // special treatment for __op column, fill default value rather than null.
                     // For Debezium CDC format, use the op from the CDC envelope.
+                    DCHECK(_envelope_type != TEnvelopeType::DEBEZIUM || _cdc_op != 0xFF);
                     uint8_t op_val = _envelope_type != TEnvelopeType::NONE ? _cdc_op : 0;
                     if (column->is_binary()) {
                         column->append_strings(&kCdcOpSlices[op_val], 1);

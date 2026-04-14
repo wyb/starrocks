@@ -56,7 +56,9 @@ import com.starrocks.sql.ast.expression.FunctionCallExpr;
 import com.starrocks.sql.parser.AstBuilder;
 import com.starrocks.sql.parser.ParsingException;
 import com.starrocks.sql.parser.SqlParser;
+import com.starrocks.sql.ast.KeysType;
 import com.starrocks.thrift.TDescriptorTable;
+import com.starrocks.thrift.TEnvelopeType;
 import com.starrocks.thrift.TExplainLevel;
 import com.starrocks.thrift.TFileFormatType;
 import com.starrocks.thrift.TFileType;
@@ -796,6 +798,24 @@ public class StreamLoadScanNodeTest {
             TPlanNode planNode = new TPlanNode();
             scanNode.toThrift(planNode);
         });
+    }
+
+    @Test
+    public void testEnvelopeDebeziumRequiresPrimaryKeyTable() throws StarRocksException {
+        DescriptorTable descTbl = new DescriptorTable();
+        TupleDescriptor dstDesc = descTbl.createTupleDescriptor("DstTableDesc");
+
+        TStreamLoadPutRequest request = getBaseRequest();
+        request.setFormatType(TFileFormatType.FORMAT_JSON);
+        request.setEnvelope(TEnvelopeType.DEBEZIUM);
+
+        StreamLoadScanNode scanNode = getStreamLoadScanNode(dstDesc, request);
+        new Expectations() {{
+            dstTable.getKeysType();
+            result = KeysType.DUP_KEYS;
+        }};
+        assertThrows(StarRocksException.class, () -> scanNode.init(descTbl),
+                "envelope=debezium is only supported on PRIMARY KEY tables");
     }
 
     @Test

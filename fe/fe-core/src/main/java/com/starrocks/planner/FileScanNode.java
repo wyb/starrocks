@@ -42,7 +42,9 @@ import com.starrocks.catalog.BrokerTable;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.FsBroker;
 import com.starrocks.catalog.FunctionSet;
+import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
+import com.starrocks.sql.ast.KeysType;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.common.Config;
 import com.starrocks.common.CsvFormat;
@@ -676,6 +678,13 @@ public class FileScanNode extends LoadScanNode {
 
     @Override
     public void finalizeStats() throws StarRocksException {
+        if (!Strings.isNullOrEmpty(jsonOptions.envelope)
+                && jsonOptions.envelope.equalsIgnoreCase(LoadStmt.ENVELOPE_DEBEZIUM)
+                && targetTable instanceof OlapTable
+                && ((OlapTable) targetTable).getKeysType() != KeysType.PRIMARY_KEYS) {
+            throw new StarRocksException("envelope=debezium is only supported on PRIMARY KEY tables");
+        }
+
         locationsList = Lists.newArrayList();
         locationsHeap = new PriorityQueue<>(SCAN_RANGE_LOCATIONS_COMPARATOR);
 
