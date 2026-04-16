@@ -103,6 +103,15 @@ SELECT * FROM information_schema.be_configs [WHERE NAME LIKE "%<name_pattern>%"]
 - 説明: BE/CN プロセスが終了する際に待機するループ回数。各ループは固定間隔の 10 秒です。ループ待機を無効にするには `0` に設定できます。v3.4 以降、この項目は変更可能になり、デフォルト値は `0` から `2` に変更されました。
 - 導入バージョン: v2.5
 
+### starlet_cache_dir
+
+- デフォルト: ""（空）
+- タイプ: String
+- 単位: -
+- 変更可能: いいえ
+- 説明: 共有データテーブルのローカルデータキャッシュディレクトリ。空のままにすると、`storage_root_path` 内の各パスに対して `starlet_cache` サブディレクトリが使用され、複数のパスは `:` で結合されます。
+- 導入バージョン: v3.0
+
 ### starlet_filesystem_instance_cache_capacity
 
 - デフォルト: 10000

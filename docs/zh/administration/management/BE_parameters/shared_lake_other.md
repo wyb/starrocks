@@ -109,6 +109,15 @@ SELECT * FROM information_schema.be_configs [WHERE NAME LIKE "%<name_pattern>%"]
 - 描述：BE 范围内的客户端缓存为每个远程主机保留的最大缓存 client 实例数。提高此值可以减少重连和 stub 创建开销，但会增加内存和文件描述符使用；降低它则节省资源但可能增加连接 churn。该值在启动时读取，运行时无法更改。目前一个共享设置控制所有客户端缓存类型；将来可能会引入每种缓存的独立配置。
 - 引入版本：v3.2.0
 
+### starlet_cache_dir
+
+- 默认值：""（空）
+- 类型：String
+- 单位：-
+- 是否动态：否
+- 描述：存算分离表的本地数据缓存目录。若设置为空，系统将使用 `storage_root_path` 中每个路径下的 `starlet_cache` 子目录，多个路径以 `:` 分隔。
+- 引入版本：v3.0
+
 ### starlet_filesystem_instance_cache_capacity
 
 - 默认值：10000

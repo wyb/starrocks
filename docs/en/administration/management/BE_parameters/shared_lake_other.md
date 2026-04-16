@@ -112,6 +112,15 @@ This topic introduces the following types of FE configurations:
 - Description: The maximum number of cached client instances retained for each remote host by BE-wide client caches. This single setting is used when creating BackendServiceClientCache, FrontendServiceClientCache, and BrokerServiceClientCache during ExecEnv initialization, so it limits the number of client stubs/connections kept per host across those caches. Raising this value reduces reconnects and stub creation overhead at the cost of increased memory and file-descriptor usage; lowering it saves resources but may increase connection churn. The value is read at startup and cannot be changed at runtime. Currently one shared setting controls all client cache types; separate per-cache configuration may be introduced later.
 - Introduced in: v3.2.0
 
+### starlet_cache_dir
+
+- Default: "" (empty)
+- Type: String
+- Unit: -
+- Is mutable: No
+- Description: The local data cache directory for cloud native tables. If left empty, the system uses `<storage_root_path>/starlet_cache` for each path in `storage_root_path`, joined with `:`.
+- Introduced in: v3.0
+
 ### starlet_filesystem_instance_cache_capacity
 
 - Default: 10000
