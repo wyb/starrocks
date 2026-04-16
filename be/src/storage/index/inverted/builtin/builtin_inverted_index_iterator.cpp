@@ -330,13 +330,7 @@ Status BuiltinInvertedIndexIterator::read_from_inverted_index(const std::string&
         for (const auto& predicate : predicates) {
             roaring.clear();
             Slice s(predicate);
-            // After parser-aware tokenization, '%' is typically preserved only for parser=none.
-            // Keep this branch so MATCH_ALL/MATCH_ANY can still reuse wildcard semantics in that mode.
-            if (predicate.find('%') != std::string::npos) {
-                RETURN_IF_ERROR(_wildcard_query(&s, &roaring));
-            } else {
-                RETURN_IF_ERROR(_equal_query(&s, &roaring));
-            }
+            RETURN_IF_ERROR(_equal_query(&s, &roaring));
 
             if (first) {
                 *bitmap = std::move(roaring);
