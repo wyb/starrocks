@@ -14,6 +14,7 @@
 
 package com.starrocks.load.streamload;
 
+import com.starrocks.common.StarRocksException;
 import com.starrocks.common.util.Util;
 import com.starrocks.sql.ast.LoadStmt;
 import com.starrocks.thrift.TEnvelopeType;
@@ -301,7 +302,7 @@ public class StreamLoadKvParams implements StreamLoadParams {
     }
 
     @Override
-    public Optional<TEnvelopeType> getEnvelope() {
+    public Optional<TEnvelopeType> getEnvelope() throws StarRocksException {
         String value = params.get(HTTP_ENVELOPE);
         if (value == null) {
             return Optional.empty();
@@ -309,7 +310,10 @@ public class StreamLoadKvParams implements StreamLoadParams {
         if (value.equalsIgnoreCase(LoadStmt.ENVELOPE_DEBEZIUM)) {
             return Optional.of(TEnvelopeType.DEBEZIUM);
         }
-        return Optional.of(TEnvelopeType.NONE);
+        if (value.equalsIgnoreCase("none")) {
+            return Optional.of(TEnvelopeType.NONE);
+        }
+        throw new StarRocksException("Unknown envelope type: " + value);
     }
 
     public Optional<Boolean> getEnableBatchWrite() {

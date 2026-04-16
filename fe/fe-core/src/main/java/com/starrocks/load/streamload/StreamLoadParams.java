@@ -14,6 +14,7 @@
 
 package com.starrocks.load.streamload;
 
+import com.starrocks.common.StarRocksException;
 import com.starrocks.thrift.TEnvelopeType;
 import com.starrocks.thrift.TFileFormatType;
 import com.starrocks.thrift.TFileType;
@@ -62,5 +63,5 @@ public interface StreamLoadParams {
     Optional<String> getJsonPaths();
     Optional<String> getJsonRoot();
     Optional<Boolean> getStripOuterArray();
-    Optional<TEnvelopeType> getEnvelope();
+    Optional<TEnvelopeType> getEnvelope() throws StarRocksException;
 }

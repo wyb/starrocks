@@ -14,6 +14,7 @@
 
 package com.starrocks.load.streamload;
 
+import com.starrocks.common.StarRocksException;
 import com.starrocks.service.FrontendServiceImpl;
 import com.starrocks.thrift.TEnvelopeType;
 import com.starrocks.thrift.TFileFormatType;
@@ -194,7 +195,7 @@ public class StreamLoadThriftParams implements StreamLoadParams {
     }
 
     @Override
-    public Optional<TEnvelopeType> getEnvelope() {
+    public Optional<TEnvelopeType> getEnvelope() throws StarRocksException {
         return request.isSetEnvelope() ? Optional.of(request.getEnvelope()) : Optional.empty();
     }
 }
