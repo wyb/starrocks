@@ -400,8 +400,8 @@ def _date_range(since: str, until: str) -> list[str]:
 
 
 def _collect_raw_files(args) -> list[Path]:
-    """Resolve raw JSON files from --file or --since/--until."""
-    if args.file:
+    """Resolve raw JSON files from --file, --since/--until, or --days."""
+    if getattr(args, "file", None):
         file_path = Path(args.file)
         if not file_path.exists():
             file_path = RAW_DIR / args.file
@@ -410,12 +410,16 @@ def _collect_raw_files(args) -> list[Path]:
             sys.exit(1)
         return [file_path]
 
-    if not args.since:
-        print("Error: must specify --file or --since")
+    since = getattr(args, "since", None)
+    if not since and getattr(args, "days", None):
+        since = (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
+
+    if not since:
+        print("Error: must specify --file, --since or --days")
         sys.exit(1)
 
-    until = args.until or datetime.now().strftime("%Y-%m-%d")
-    dates = _date_range(args.since, until)
+    until = getattr(args, "until", None) or datetime.now().strftime("%Y-%m-%d")
+    dates = _date_range(since, until)
     files = []
     for d in dates:
         f = RAW_DIR / f"pr_raw_{d}.json"
@@ -424,7 +428,7 @@ def _collect_raw_files(args) -> list[Path]:
         else:
             print(f"  Skipping {f.name} (not found)")
     if not files:
-        print("No raw files found in the specified date range.")
+        print(f"No raw files found in range [{since} .. {until}].")
         sys.exit(1)
     return files
 
@@ -587,8 +591,8 @@ PROPERTIES("replication_num" = "1");
 # --- Step 3: load JSON into StarRocks ---
 
 def _collect_enriched_files(args) -> list[Path]:
-    """Resolve enriched JSON files from --file or --since/--until."""
-    if args.file:
+    """Resolve enriched JSON files from --file, --since/--until, or --days."""
+    if getattr(args, "file", None):
         file_path = Path(args.file)
         if not file_path.exists():
             file_path = ENRICHED_DIR / args.file
@@ -597,12 +601,16 @@ def _collect_enriched_files(args) -> list[Path]:
             sys.exit(1)
         return [file_path]
 
-    if not args.since:
-        print("Error: must specify --file or --since")
+    since = getattr(args, "since", None)
+    if not since and getattr(args, "days", None):
+        since = (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
+
+    if not since:
+        print("Error: must specify --file, --since or --days")
         sys.exit(1)
 
-    until = args.until or datetime.now().strftime("%Y-%m-%d")
-    dates = _date_range(args.since, until)
+    until = getattr(args, "until", None) or datetime.now().strftime("%Y-%m-%d")
+    dates = _date_range(since, until)
     files = []
     for d in dates:
         f = ENRICHED_DIR / f"pr_enriched_{d}.json"
@@ -611,7 +619,7 @@ def _collect_enriched_files(args) -> list[Path]:
         else:
             print(f"  Skipping {f.name} (not found)")
     if not files:
-        print("No enriched files found in the specified date range.")
+        print(f"No enriched files found in range [{since} .. {until}].")
         sys.exit(1)
     return files
 
@@ -865,6 +873,7 @@ def main():
     # enrich: AI summary + embedding
     p_enrich = sub.add_parser("enrich", help="Generate AI summaries + embeddings for raw PR JSON")
     p_enrich.add_argument("--file", type=str, help="Raw PR JSON file path")
+    p_enrich.add_argument("--days", type=int, default=1, help="Process last N days (ignored if --since or --file is set)")
     p_enrich.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
     p_enrich.add_argument("--until", type=str, help="End date (default: today)")
     p_enrich.add_argument("--output", type=str, help="Output enriched JSON path (single file only)")
@@ -877,12 +886,14 @@ def main():
     # load: import into StarRocks
     p_load = sub.add_parser("load", help="Load enriched JSON files into StarRocks")
     p_load.add_argument("--file", type=str, help="Enriched JSON file path")
+    p_load.add_argument("--days", type=int, default=1, help="Process last N days (ignored if --since or --file is set)")
     p_load.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
     p_load.add_argument("--until", type=str, help="End date (default: today)")
 
     # link-backport: scan raw files and populate pr_versions with backport relationships
     p_link = sub.add_parser("link-backport", help="Scan raw files and load backport version mappings into pr_versions")
     p_link.add_argument("--file", type=str, help="Raw PR JSON file path")
+    p_link.add_argument("--days", type=int, default=1, help="Process last N days (ignored if --since or --file is set)")
     p_link.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
     p_link.add_argument("--until", type=str, help="End date (default: today)")
 
