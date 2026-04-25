@@ -87,6 +87,57 @@ def sr_query(sql: str, database=SR_DB) -> list:
         conn.close()
 
 
+SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen3.5:9b")
+
+def ollama_analyze_fix(query: str, prs: list[dict]) -> str:
+    """Analyze if any of the PRs fix the problem described in query."""
+    if not prs:
+        return "No relevant PRs found to analyze."
+
+    context = ""
+    for i, pr in enumerate(prs):
+        context += f"--- Candidate {i+1} ---\n"
+        context += f"PR #{pr['pr_number']}: {pr['title']}\n"
+        context += f"Summary: {pr.get('ai_summary', '')}\n"
+        if pr.get("ai_summary_en"):
+            context += f"English Summary: {pr['ai_summary_en']}\n"
+        context += "\n"
+
+    prompt = f"""
+You are an expert software engineer analyzing GitHub Pull Requests for StarRocks.
+The user is reporting a problem: "{query}"
+
+Based on the following candidate PRs, analyze if any of them fixed this problem.
+If a PR seems to fix it, explain WHY and provide the PR number.
+If none of them fix it, state that clearly.
+
+Candidates:
+{context}
+
+Response format:
+1. A summary sentence: "The problem was [likely/possibly/not] fixed by PR #[number]."
+2. Detailed analysis for each relevant PR.
+3. If not fixed, suggest keywords for further search.
+
+Answer in Chinese.
+"""
+    conn = http.client.HTTPConnection(OLLAMA_HOST, OLLAMA_PORT, timeout=300)
+    payload = json.dumps({
+        "model": SUMMARY_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {"num_predict": 1000}
+    })
+    try:
+        conn.request("POST", "/api/chat", body=payload,
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        return data.get("message", {}).get("content", "").strip()
+    finally:
+        conn.close()
+
+
 def search_vector(query: str, top_k: int, filters: dict) -> list[dict]:
     embedding = ollama_embed(query)
     vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
@@ -348,6 +399,8 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 .empty { text-align: center; padding: 40px; color: #999; }
 .error { text-align: center; padding: 20px; color: #c5221f; background: #fce8e6;
          border-radius: 8px; margin: 12px 0; }
+.analysis-box { background: #fff8e1; border-left: 4px solid #ffc107; padding: 16px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
+.analysis-title { font-weight: bold; margin-bottom: 8px; color: #b06000; display: flex; align-items: center; gap: 8px; }
 </style>
 </head>
 <body>
@@ -494,10 +547,43 @@ async function doFilter() {
     }
 }
 
+async function doAnalyze() {
+    const query = document.getElementById('query').value.trim();
+    if (!query) return;
+    const el = document.getElementById('results');
+    el.innerHTML = '<div class="loading">AI 分析中... (搜索 PR + LLM 推理)</div>';
+    try {
+        const filters = getFilters();
+        const data = await api('analyze', { query, ...filters });
+        if (!data.analysis) {
+            el.innerHTML = '<div class="error">AI 未返回分析结果</div>';
+            return;
+        }
+        let html = `
+            <div class="analysis-box">
+                <div class="analysis-title">✨ AI 修复分析</div>
+                <div>${escHtml(data.analysis).replace(/\\n/g, '<br>')}</div>
+            </div>
+            <div style="margin-bottom:10px; font-weight:bold; color:#666;">分析依据的相关 PR:</div>
+        `;
+        el.innerHTML = html;
+        const resultsEl = document.createElement('div');
+        el.appendChild(resultsEl);
+        renderResultsIn(data.results, true, resultsEl);
+    } catch (e) {
+        el.innerHTML = '<div class="error">分析失败: ' + e.message + '</div>';
+    }
+}
+
 function renderResults(results, showScore) {
     const el = document.getElementById('results');
+    el.innerHTML = ''; 
+    renderResultsIn(results, showScore, el);
+}
+
+function renderResultsIn(results, showScore, container) {
     if (!results || results.length === 0) {
-        el.innerHTML = '<div class="empty">没有找到匹配的 PR</div>';
+        container.innerHTML = '<div class="empty">没有找到匹配的 PR</div>';
         return;
     }
     let html = `<div style="padding:8px 0;color:#666;font-size:14px;">共 ${results.length} 条结果</div>`;
@@ -534,7 +620,7 @@ function renderResults(results, showScore) {
             ${r.ai_summary_en ? '<div class="summary" style="color:#888;margin-top:4px;">' + escHtml(r.ai_summary_en) + '</div>' : ''}
         </div>`;
     });
-    el.innerHTML = html;
+    container.innerHTML += html;
 }
 
 function escHtml(s) {
@@ -591,6 +677,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._html(HTML_PAGE.replace("__REPO__", REPO))
         elif path == "/api/search":
             self._handle_search(params)
+        elif path == "/api/analyze":
+            self._handle_analyze(params)
         elif path == "/api/filter":
             self._handle_filter(params)
         elif path == "/api/stats":
@@ -611,6 +699,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             results = attach_versions(search_vector(query, top_k, filters))
             self._json({"results": results})
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    def _handle_analyze(self, params):
+        query = params.get("query", "")
+        if not query:
+            self._json({"error": "query required"}, 400)
+            return
+        # Analyze top 5 most relevant PRs
+        top_k = 5
+        filters = {k: params.get(k, "") for k in
+                   ("pr_number", "module", "change_type", "version", "author", "since", "until")}
+        try:
+            results = attach_versions(search_vector(query, top_k, filters))
+            analysis = ollama_analyze_fix(query, results)
+            self._json({"analysis": analysis, "results": results})
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
