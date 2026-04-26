@@ -30,22 +30,22 @@ def run_pipeline():
     print(f"\n{'='*60}", flush=True)
     print(f"[{now}] Starting scheduled pipeline execution...", flush=True)
     print(f"{'='*60}\n", flush=True)
-    
+
     try:
         # 使用当前 Python 解释器运行同目录下的 pr.py
-        # --days 1 足够覆盖每小时的增量数据，fetch 步骤会自动去重
+        # --days 2 足够覆盖每小时的增量数据，fetch 步骤会自动去重
         result = subprocess.run(
-            [sys.executable, "pr.py", "pipeline", "--days", "1"],
+            [sys.executable, "pr.py", "pipeline", "--days", "2"],
             check=False,
             text=True
         )
-        
+
         finish_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if result.returncode == 0:
             print(f"\n[{finish_now}] Pipeline finished successfully.", flush=True)
         else:
             print(f"\n[{finish_now}] Pipeline failed with return code {result.returncode}.", flush=True)
-            
+
     except Exception as e:
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Unexpected error: {e}", flush=True)
 
@@ -58,15 +58,15 @@ def main():
     print(f"StarRocks PR Analytics Daemon started.", flush=True)
     print(f"Interval: {INTERVAL} seconds (1 hour)", flush=True)
     print(f"PID: {os.getpid()}", flush=True)
-    
+
     try:
         while True:
             run_pipeline()
-            
+
             next_run = time.time() + INTERVAL
             next_run_str = datetime.fromtimestamp(next_run).strftime("%H:%M:%S")
             print(f"\nWaiting for 1 hour. Next run at approx: {next_run_str}", flush=True)
-            
+
             time.sleep(INTERVAL)
     except KeyboardInterrupt:
         print("\nDaemon stopped by user.")
