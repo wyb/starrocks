@@ -301,6 +301,23 @@ def attach_versions(results: list) -> list:
     return results
 
 
+def get_pr_detail(pr_number: int) -> dict | None:
+    rows = sr_query(f"""
+SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
+       d.ai_summary, d.ai_summary_en, d.body, d.merged_at, d.additions,
+       d.deletions, d.changed_files
+FROM pr_data d
+WHERE d.pr_number = {pr_number}
+LIMIT 1;
+""")
+    if not rows:
+        return None
+
+    result = attach_versions(rows)[0]
+    result["github_url"] = f"https://github.com/{REPO}/pull/{pr_number}"
+    return result
+
+
 def get_filter_options() -> dict:
     modules = sr_query(f"SELECT DISTINCT module FROM pr_data ORDER BY module;")
     types = sr_query(f"SELECT DISTINCT change_type FROM pr_data ORDER BY change_type;")
@@ -675,6 +692,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/" or path == "/index.html":
             self._html(HTML_PAGE.replace("__REPO__", REPO))
+        elif path == "/api/agent/search":
+            self._handle_search(params)
+        elif path == "/api/agent/filter":
+            self._handle_filter(params)
+        elif path.startswith("/api/agent/pr/"):
+            self._handle_agent_pr(path)
         elif path == "/api/search":
             self._handle_search(params)
         elif path == "/api/analyze":
@@ -688,43 +711,104 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self._json({"error": "not found"}, 404)
 
-    def _handle_search(self, params):
-        query = params.get("query", "")
-        if not query:
-            self._json({"error": "query required"}, 400)
-            return
-        top_k = int(params.get("top", 50))
-        filters = {k: params.get(k, "") for k in
-                   ("pr_number", "module", "change_type", "version", "author", "since", "until")}
+    def _parse_top_k(self, params, default=50):
         try:
+            top_k = int(params.get("top", default))
+        except (TypeError, ValueError):
+            raise ValueError("top must be an integer")
+        if top_k <= 0:
+            raise ValueError("top must be positive")
+        return top_k
+
+    def _parse_pr_number_filter(self, params):
+        pr_number = params.get("pr_number", "")
+        if not pr_number:
+            return ""
+        try:
+            return str(int(pr_number))
+        except (TypeError, ValueError):
+            raise ValueError("pr_number must be an integer")
+
+    def _search_filters(self, params):
+        filters = {k: params.get(k, "") for k in
+                   ("module", "change_type", "version", "author", "since", "until")}
+        filters["pr_number"] = self._parse_pr_number_filter(params)
+        return filters
+
+    def _filter_filters(self, params):
+        filters = {k: params.get(k, "") for k in
+                   ("module", "change_type", "version", "author", "since", "until", "keyword", "match_mode")}
+        filters["pr_number"] = self._parse_pr_number_filter(params)
+        return filters
+
+    def _resolve_text_arg(self, params, primary: str) -> str:
+        aliases = [primary]
+        for name in ("query", "keyword", "q"):
+            if name not in aliases:
+                aliases.append(name)
+        for name in aliases:
+            value = params.get(name, "")
+            if value:
+                return value
+        return ""
+
+    def _handle_search(self, params):
+        query = self._resolve_text_arg(params, "query")
+        if not query:
+            self._json({"error": "query, keyword, or q required"}, 400)
+            return
+        try:
+            top_k = self._parse_top_k(params)
+            filters = self._search_filters(params)
             results = attach_versions(search_vector(query, top_k, filters))
             self._json({"results": results})
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
     def _handle_analyze(self, params):
-        query = params.get("query", "")
+        query = self._resolve_text_arg(params, "query")
         if not query:
-            self._json({"error": "query required"}, 400)
+            self._json({"error": "query, keyword, or q required"}, 400)
             return
         # Analyze top 5 most relevant PRs
         top_k = 5
-        filters = {k: params.get(k, "") for k in
-                   ("pr_number", "module", "change_type", "version", "author", "since", "until")}
         try:
+            filters = self._search_filters(params)
             results = attach_versions(search_vector(query, top_k, filters))
             analysis = ollama_analyze_fix(query, results)
             self._json({"analysis": analysis, "results": results})
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
     def _handle_filter(self, params):
-        top_k = int(params.get("top", 50))
-        filters = {k: params.get(k, "") for k in
-                   ("pr_number", "module", "change_type", "version", "author", "since", "until", "keyword", "match_mode")}
         try:
+            top_k = self._parse_top_k(params)
+            filters = self._filter_filters(params)
+            filters["keyword"] = self._resolve_text_arg(params, "keyword")
             results = attach_versions(search_sql(filters, top_k))
             self._json({"results": results})
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    def _handle_agent_pr(self, path):
+        try:
+            pr_number = int(path.rsplit("/", 1)[-1])
+        except ValueError:
+            self._json({"error": "invalid pr number"}, 400)
+            return
+
+        try:
+            result = get_pr_detail(pr_number)
+            if not result:
+                self._json({"error": "pr not found"}, 404)
+                return
+            self._json({"result": result})
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
