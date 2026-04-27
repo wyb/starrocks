@@ -1,6 +1,6 @@
 # PR Analytics - StarRocks PR 智能分析工具
 
-通过 Ollama 本地模型对 StarRocks GitHub PR 生成中英文双语摘要和向量 embedding，存入 StarRocks（Primary Key + HNSW 向量索引），支持语义搜索和 Web UI。
+通过 Ollama 本地模型对 StarRocks GitHub PR 生成中英文双语摘要和向量 embedding，存入 StarRocks（Primary Key + HNSW 向量索引），支持语义搜索、AI 修复分析、Web UI 和 agent HTTP API。
 
 ## 架构
 
@@ -60,6 +60,7 @@ python3 pr.py fetch --since 2025-04-01 --until 2025-04-30
 断点续跑，自动跳过已处理的 PR。Backport PR 自动跳过（不生成摘要）。
 
 ```bash
+python3 pr.py enrich --days 1
 python3 pr.py enrich --file data/raw/pr_raw_20250401.json
 python3 pr.py enrich --since 2025-04-01
 python3 pr.py enrich --since 2025-04-01 --until 2025-04-30
@@ -82,6 +83,7 @@ python3 pr.py init-table --force    # 强制删除重建
 重复导入自动更新（Primary Key 去重）。导入时自动写入主版本到 `pr_versions`。
 
 ```bash
+python3 pr.py load --days 1
 python3 pr.py load --file data/enriched/pr_enriched_20250401.json
 python3 pr.py load --since 2025-04-01
 python3 pr.py load --since 2025-04-01 --until 2025-04-30
@@ -92,9 +94,12 @@ python3 pr.py load --since 2025-04-01 --until 2025-04-30
 扫描 raw 文件，提取 backport PR 的版本信息，写入 `pr_versions` 表关联到主 PR。
 
 ```bash
+python3 pr.py link-backport --days 1
 python3 pr.py link-backport --since 2025-04-01
 python3 pr.py link-backport --since 2025-04-01 --until 2025-04-30
 ```
+
+`enrich`、`load`、`link-backport` 现在都支持 `--days N`，和 `fetch` / `pipeline` 一样适合做最近 N 天的增量补处理；指定 `--file` 或 `--since` 后会忽略 `--days`。
 
 ### 6. 语义搜索（命令行）
 
@@ -114,12 +119,52 @@ python3 web.py --port 9090    # 自定义端口
 
 打开 `http://localhost:8888`，支持：
 - **语义搜索**（自然语言，调 Ollama 生成 embedding）
+- **AI 修复分析**（调用 `/api/analyze`，先召回最相关 PR，再让 LLM 判断“这个问题是否已被历史 PR 修复”）
 - **关键词过滤**（匹配 title + 中英文摘要）。支持四种模式切换：
   - `自动`（默认）：优先使用 `LIKE` 匹配全字段，无结果则自动降级尝试 `MATCH_ALL`，最后尝试 `MATCH_ANY`。
   - `LIKE`：标准 SQL 模糊匹配。
   - `MATCH ALL` / `MATCH ANY`：使用 StarRocks 倒排索引分词匹配。倒排索引查询会按 `title` > `ai_summary` > `ai_summary_en` 的优先级逐个字段查询，匹配到即返回。
 - **筛选条件**：PR# / Module / Type / Version / Author / 时间范围
 - 每个 PR 展示所有关联版本（含 backport），版本号可点击跳转对应 PR
+
+### 8. 定时运行（守护进程）
+
+`daemon.py` 会每小时自动执行一次 `pipeline`，适合长期挂在宿主机上做增量同步。
+
+```bash
+python3 daemon.py
+nohup python3 daemon.py > daemon.log 2>&1 &
+tail -f daemon.log
+```
+
+实现细节：
+- 每小时运行一次
+- 内部调用 `python3 pr.py pipeline --days 2`
+- 启动时会自动切到 `tools/pr_analytics/` 目录，避免相对路径出错
+
+### 9. HTTP API / Agent 接口
+
+启动 `python3 web.py` 后，除了浏览器页面，还会暴露可供脚本和 agent 调用的 HTTP 接口。
+
+常用查询参数：
+- 通用筛选：`pr_number`、`module`、`change_type`、`version`、`author`、`since`、`until`
+- 结果条数：`top`
+- 关键词过滤模式：`match_mode=auto|like|all|any`
+
+| Endpoint | 说明 |
+|----------|------|
+| `GET /api/search?query=...` | 语义搜索，返回 `{"results": [...]}` |
+| `GET /api/filter?keyword=...` | 关键词过滤，返回 `{"results": [...]}` |
+| `GET /api/analyze?query=...` | 先召回 Top 5 相关 PR，再调用 Ollama 输出修复分析，返回 `{"analysis": "...", "results": [...]}` |
+| `GET /api/agent/search?query=...` | 面向 agent 的语义搜索接口，返回格式同 `/api/search` |
+| `GET /api/agent/filter?keyword=...` | 面向 agent 的关键词接口，返回格式同 `/api/filter` |
+| `GET /api/agent/pr/<number>` | 查询单个 PR 详情，返回 `body`、`versions`、`github_url` 等字段 |
+
+`/api/agent/search` 和 `/api/agent/filter` 额外兼容 `q` / `query` / `keyword` 等参数别名，便于不同 agent 工作流接入。
+
+### 10. 配套 Skill
+
+目录内新增了 [`skills/pr-fix-finder/SKILL.md`](./skills/pr-fix-finder/SKILL.md)，用于回答“某个 StarRocks 问题是否已被历史 PR 修复”。它依赖上面的 `/api/agent/search`、`/api/agent/filter`、`/api/agent/pr/<number>` 接口做多轮召回和证据补全。
 
 ## 环境变量
 
@@ -133,7 +178,7 @@ python3 web.py --port 9090    # 自定义端口
 | `OLLAMA_HOST` | `localhost` | Ollama 地址 |
 | `OLLAMA_PORT` | `11434` | Ollama 端口 |
 | `EMBED_MODEL` | `bge-m3` | embedding 模型 |
-| `SUMMARY_MODEL` | `qwen3.5:9b` | 摘要模型 |
+| `SUMMARY_MODEL` | `qwen3.5:9b` | 摘要 / 修复分析模型 |
 | `EMBEDDING_DIM` | `1024` | 向量维度 |
 
 ## 表结构
