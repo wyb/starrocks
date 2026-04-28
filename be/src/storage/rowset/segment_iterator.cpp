@@ -15,12 +15,15 @@
 #include "segment_iterator.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <unordered_map>
 #include <utility>
 
 #include "base/simd/simd.h"
 #include "base/utility/defer_op.h"
+#include "column/array_column.h"
 #include "column/chunk.h"
 #include "column/column_helper.h"
 #include "column/datum_tuple.h"
@@ -279,6 +282,13 @@ private:
         int result_order = 0;
         bool use_ivfpq = false;
 
+        // Brute-force fallback fields (when .vi file is missing)
+        bool use_brute_force = false;
+        bool is_cosine_similarity = false; // metric type from index metadata
+        ColumnId vector_data_column_id = 0;
+        int32_t vector_data_column_uid = -1;
+        bool added_vector_data_column = false; // true if we appended vector column to _schema
+
 #ifdef WITH_TENANN
         tenann::PrimitiveSeqView query_view;
         std::shared_ptr<tenann::IndexMeta> index_meta;
@@ -286,7 +296,6 @@ private:
 
         std::shared_ptr<VectorIndexReader> ann_reader;
 
-        // Helper method to check if rowid should always be built
         bool always_build_rowid() const { return use_vector_index && !use_ivfpq; }
     };
 
@@ -438,7 +447,10 @@ private:
 
     bool need_early_materialize_subfield(const FieldPtr& field);
 
+    Status _prepare_vector_index();
     Status _init_ann_reader();
+    void _setup_brute_force_fallback(const TabletIndex& index);
+    void _compute_brute_force_distances(const Column* vector_column, Chunk* chunk);
 
     IndexReadOptions _index_read_options(ColumnId cid) const;
 
@@ -876,9 +888,10 @@ Status SegmentIterator::_init_internal() {
     // The main task is to do some initialization,
     // initialize the iterator and check if certain optimizations can be applied
     _init_column_access_paths();
+    RETURN_IF_ERROR(_prepare_vector_index());
+    RETURN_IF_ERROR(_init_ann_reader());
     RETURN_IF_ERROR(_check_low_cardinality_optimization());
     RETURN_IF_ERROR(_init_column_iterators<true>(_schema));
-    RETURN_IF_ERROR(_init_ann_reader());
     // filter by index stage
     // Use indexes and predicates to filter some data page
     RETURN_IF_ERROR(_get_row_ranges_by_rowid_range());
@@ -932,14 +945,14 @@ inline Status SegmentIterator::_init_reader_from_file(const std::string& index_p
     _vector_index_ctx->index_meta = std::make_shared<tenann::IndexMeta>(std::move(meta));
     auto create_st = VectorIndexReaderFactory::create_from_file(index_path, _vector_index_ctx->index_meta,
                                                                 &_vector_index_ctx->ann_reader, fs);
-    // .vi file not found — fallback to brute-force scan
+    // .vi file not found — caller will set up brute-force fallback
     if (create_st.is_not_found()) {
         _vector_index_ctx->use_vector_index = false;
         return Status::OK();
     }
     RETURN_IF_ERROR(create_st);
     auto status = _vector_index_ctx->ann_reader->init_searcher(*_vector_index_ctx->index_meta.get(), index_path, fs);
-    // means empty ann reader — fallback to brute-force scan
+    // empty ann reader — caller will set up brute-force fallback
     if (status.is_not_supported()) {
         _vector_index_ctx->use_vector_index = false;
         return Status::OK();
@@ -950,48 +963,142 @@ inline Status SegmentIterator::_init_reader_from_file(const std::string& index_p
 #endif
 }
 
+// Sets up brute-force fallback state and ensures the vector data column is in _schema.
+// Called from _prepare_vector_index and _init_ann_reader, both before _init_column_iterators.
+void SegmentIterator::_setup_brute_force_fallback(const TabletIndex& index) {
+    int32_t vector_col_uid = index.col_unique_ids()[0];
+    _vector_index_ctx->use_vector_index = false;
+    _vector_index_ctx->use_brute_force = true;
+    _vector_index_ctx->vector_data_column_uid = vector_col_uid;
+
+    // Determine metric type from index metadata. Brute-force fallback only
+    // implements the metrics that match a planner-side approx_*_distance
+    // expression and have a straightforward local computation. Anything else
+    // disables the fallback rather than silently treating it as L2 distance.
+    const auto& props = index.common_properties();
+    auto metric_it = props.find("metric_type");
+    if (metric_it == props.end()) {
+        LOG(WARNING) << "disable brute-force vector fallback: missing metric_type for vector index on segment "
+                     << _segment->file_name();
+        _vector_index_ctx->use_brute_force = false;
+        return;
+    }
+    std::string metric = metric_it->second;
+    std::transform(metric.begin(), metric.end(), metric.begin(), ::tolower);
+    if (metric == "cosine_similarity") {
+        _vector_index_ctx->is_cosine_similarity = true;
+    } else if (metric == "l2_distance") {
+        _vector_index_ctx->is_cosine_similarity = false;
+    } else {
+        LOG(WARNING) << "disable brute-force vector fallback: unsupported metric_type '" << metric << "' on segment "
+                     << _segment->file_name();
+        _vector_index_ctx->use_brute_force = false;
+        return;
+    }
+
+    // Check if the vector column is already in _schema
+    for (const auto& field : _schema.fields()) {
+        if (field->uid() == vector_col_uid) {
+            _vector_index_ctx->vector_data_column_id = field->id();
+            return;
+        }
+    }
+
+    // Not in schema (pruned by FE) — add it
+    int32_t col_idx = _segment->tablet_schema().field_index(vector_col_uid);
+    if (col_idx < 0) {
+        // Schema/index metadata mismatch: the index references a column the
+        // segment does not have. Disable brute-force rather than producing
+        // distances against an undefined column.
+        LOG(WARNING) << "disable brute-force vector fallback: vector column uid " << vector_col_uid
+                     << " not found in tablet schema for segment " << _segment->file_name();
+        _vector_index_ctx->use_brute_force = false;
+        return;
+    }
+
+    const auto& col = _segment->tablet_schema().column(col_idx);
+    ColumnId cid = static_cast<ColumnId>(col_idx);
+    auto field = std::make_shared<Field>(ChunkHelper::convert_field(cid, col));
+    _vector_index_ctx->vector_data_column_id = cid;
+    _schema.append(field);
+    _vector_index_ctx->added_vector_data_column = true;
+}
+
+// Handles the case where the segment footer explicitly marks no .vi file (skip_vector_index).
+// Adds the vector column to _schema so it's read in the same I/O pass as other columns.
+Status SegmentIterator::_prepare_vector_index() {
+    if (!_vector_index_ctx || !_vector_index_ctx->use_vector_index || _vector_index_ctx->use_ivfpq) {
+        return Status::OK();
+    }
+
+    if (!_segment->skip_vector_index()) {
+        return Status::OK();
+    }
+
+    // Footer marks no .vi file — find the vector index and set up brute-force
+    for (const auto& index : *_segment->tablet_schema().indexes()) {
+        if (index.index_type() == VECTOR && !index.col_unique_ids().empty()) {
+            _setup_brute_force_fallback(index);
+            break;
+        }
+    }
+    return Status::OK();
+}
+
+// Opens the .vi file and initializes the ANN reader.
+// If the .vi file is missing at runtime (e.g., async build not yet finished),
+// falls back to brute-force — the vector column added to _schema will be
+// initialized by the subsequent _init_column_iterators call.
 Status SegmentIterator::_init_ann_reader() {
-#ifdef WITH_TENANN
     if (!_vector_index_ctx || !_vector_index_ctx->use_vector_index) {
         return Status::OK();
     }
-    std::unordered_map<int32_t, TabletIndex> col_map_index;
-    for (const auto& index : *_segment->tablet_schema().indexes()) {
-        if (index.index_type() == VECTOR) {
-            col_map_index.emplace(index.col_unique_ids()[0], index);
-        }
-    }
 
-    std::vector<TabletIndex> hit_indexes;
-    for (auto& field : _schema.fields()) {
-        if (col_map_index.count(field->uid()) > 0) {
-            hit_indexes.emplace_back(col_map_index.at(field->uid()));
-        }
-    }
-
-    // TODO: Support more index in one segment iterator, only support one index for now
-    DCHECK(hit_indexes.size() <= 1) << "Only support query no more than one index now";
-
-    if (hit_indexes.empty()) {
+    if (_segment->skip_vector_index()) {
+        // Already handled by _prepare_vector_index
+        _vector_index_ctx->use_vector_index = false;
         return Status::OK();
     }
 
-    auto tablet_index_meta = std::make_shared<TabletIndex>(hit_indexes[0]);
-
-    std::string index_path;
-    if (_opts.belonged_to_cloud_native) {
-        index_path =
-                lake::gen_vector_index_path_from_segment_path(_segment->file_name(), tablet_index_meta->index_id());
-    } else {
-        index_path = IndexDescriptor::vector_index_file_path(_opts.rowset_path, _opts.rowsetid.to_string(),
-                                                             segment_id(), tablet_index_meta->index_id());
+    // Find vector index from tablet schema
+    std::shared_ptr<TabletIndex> tablet_index_meta;
+    for (const auto& index : *_segment->tablet_schema().indexes()) {
+        if (index.index_type() == VECTOR && !index.col_unique_ids().empty()) {
+            tablet_index_meta = std::make_shared<TabletIndex>(index);
+            break;
+        }
+    }
+    if (!tablet_index_meta) {
+        return Status::OK();
     }
 
-    FileSystem* vi_fs = _opts.belonged_to_cloud_native ? _segment->file_system() : nullptr;
-    return _init_reader_from_file(index_path, tablet_index_meta, _vector_index_ctx->query_params, vi_fs);
+#ifdef WITH_TENANN
+    {
+        std::string index_path;
+        if (_opts.belonged_to_cloud_native) {
+            index_path =
+                    lake::gen_vector_index_path_from_segment_path(_segment->file_name(), tablet_index_meta->index_id());
+        } else {
+            index_path = IndexDescriptor::vector_index_file_path(_opts.rowset_path, _opts.rowsetid.to_string(),
+                                                                 segment_id(), tablet_index_meta->index_id());
+        }
+
+        FileSystem* vi_fs = _opts.belonged_to_cloud_native ? _segment->file_system() : nullptr;
+        RETURN_IF_ERROR(_init_reader_from_file(index_path, tablet_index_meta, _vector_index_ctx->query_params, vi_fs));
+    }
 #else
-    return Status::OK();
+    // Without TenANN, ANN index is not available — force brute-force
+    _vector_index_ctx->use_vector_index = false;
 #endif
+
+    if (!_vector_index_ctx->use_vector_index && !_vector_index_ctx->use_ivfpq) {
+        // .vi file not found, empty reader, or no TenANN support.
+        // Set up brute-force fallback for non-IVFPQ only. IVFPQ computes distance
+        // in the expression layer, not via a BE-produced distance column.
+        _setup_brute_force_fallback(*tablet_index_meta);
+    }
+
+    return Status::OK();
 }
 
 Status SegmentIterator::_get_row_ranges_by_vector_index() {
@@ -2158,10 +2265,30 @@ Status SegmentIterator::_do_get_next(Chunk* result, vector<rowid_t>* rowid) {
         // if the delete_predicates do nothing to the selection.
         RETURN_IF_ERROR(_opts.delete_predicates.evaluate(chunk, _selection.data()));
         size_t deletes = SIMD::count_nonzero(_selection.data(), old_sz);
+        // When brute-force vector fallback is active and FE pruned the vector
+        // column from output_schema, the vector data column lives in
+        // _dict_chunk (un-swapped by _build_final_chunk). It must stay
+        // row-aligned with `chunk` for the later distance compute, so apply
+        // the same selection here. (filter_range is non-const, columns are
+        // held as Cow ImmutPtr — same as Chunk::filter_range, use
+        // as_mutable_raw_ptr to mutate in place.)
+        Column* brute_force_vec_col = nullptr;
+        if (_vector_index_ctx != nullptr && _vector_index_ctx->use_brute_force) {
+            auto vec_cid = _vector_index_ctx->vector_data_column_id;
+            if (!chunk->is_cid_exist(vec_cid)) {
+                const auto& col = _context->_dict_chunk->get_column_by_id(vec_cid);
+                if (col != nullptr && col->size() == old_sz) {
+                    brute_force_vec_col = col->as_mutable_raw_ptr();
+                }
+            }
+        }
         if (deletes == old_sz) {
             chunk->set_num_rows(0);
             if (rowid != nullptr) {
                 rowid->resize(0);
+            }
+            if (brute_force_vec_col != nullptr) {
+                brute_force_vec_col->resize(0);
             }
             _opts.stats->rows_del_filtered += old_sz;
         } else if (deletes > 0) {
@@ -2173,6 +2300,9 @@ Status SegmentIterator::_do_get_next(Chunk* result, vector<rowid_t>* rowid) {
             if (rowid != nullptr) {
                 auto size = ColumnHelper::filter_range<uint32_t>(_selection, rowid->data(), 0, old_sz);
                 rowid->resize(size);
+            }
+            if (brute_force_vec_col != nullptr) {
+                brute_force_vec_col->filter_range(_selection, 0, old_sz);
             }
             _opts.stats->rows_del_filtered += old_sz - new_sz;
         }
@@ -2203,6 +2333,57 @@ Status SegmentIterator::_do_get_next(Chunk* result, vector<rowid_t>* rowid) {
         // TODO: plan vector column in FE Planner
         chunk->append_vector_column(std::move(distance_column), _make_field(_vector_index_ctx->vector_column_id),
                                     _vector_index_ctx->vector_slot_id);
+    } else if (_vector_index_ctx && _vector_index_ctx->use_brute_force) {
+        // Brute-force fallback: compute distances from raw vector data.
+        //
+        // The vector data column may live in `chunk` (== _final_chunk) or in
+        // _dict_chunk depending on output_schema:
+        //   * If output_schema includes the vector column (FE did not prune it),
+        //     _build_final_chunk has already SWAPPED the column out of _dict_chunk
+        //     into chunk; chunk is the source of truth.
+        //   * If output_schema does NOT include the vector column (FE pruned it,
+        //     and _setup_brute_force_fallback re-added it to _schema after the
+        //     caller's init_output_schema froze output_schema), the swap skipped
+        //     it. The column is still in _dict_chunk; the delete-pred filter
+        //     above re-applies the same selection mask to keep it row-aligned
+        //     with chunk so we can read it directly here.
+        // Either way, the distance column is appended to `chunk`, which always has
+        // the planner-allocated distance slot.
+        auto vec_col_id = _vector_index_ctx->vector_data_column_id;
+        ColumnPtr vector_column = chunk->is_cid_exist(vec_col_id) ? chunk->get_column_by_id(vec_col_id)
+                                                                  : _context->_dict_chunk->get_column_by_id(vec_col_id);
+        DCHECK_EQ(vector_column->size(), chunk->num_rows())
+                << "brute-force vector column row count must match chunk; row alignment was lost";
+        if (UNLIKELY(vector_column->size() != chunk->num_rows())) {
+            return Status::InternalError("brute-force vector column row count does not match chunk row count");
+        }
+        _compute_brute_force_distances(vector_column.get(), chunk);
+
+        // Apply vector_range filter before removing columns, so slot_id mapping is intact
+        double vr = _vector_index_ctx->vector_range;
+        if (vr >= 0 && chunk->num_rows() > 0) {
+            auto dist_col = chunk->get_column_by_slot_id(_vector_index_ctx->vector_slot_id);
+            const auto* distances = down_cast<const FloatColumn*>(dist_col.get());
+            const float* dist_data = distances->get_data().data();
+            size_t num = chunk->num_rows();
+            bool ascending = (_vector_index_ctx->result_order == 1);
+            Buffer<uint8_t> selection(num);
+            for (size_t i = 0; i < num; i++) {
+                selection[i] =
+                        ascending ? (dist_data[i] <= static_cast<float>(vr)) : (dist_data[i] >= static_cast<float>(vr));
+            }
+            chunk->filter_range(selection, 0, num);
+            if (rowid != nullptr) {
+                auto new_sz = ColumnHelper::filter_range<uint32_t>(selection, rowid->data(), 0, num);
+                rowid->resize(new_sz);
+            }
+        }
+
+        // Remove the vector data column if we added it (it was pruned by FE)
+        if (_vector_index_ctx->added_vector_data_column && chunk->is_cid_exist(vec_col_id)) {
+            auto idx = chunk->get_column_id_to_index_map().at(vec_col_id);
+            chunk->remove_column_by_index(idx);
+        }
     }
 
     result->swap_chunk(*chunk);
@@ -2396,6 +2577,114 @@ StatusOr<size_t> SegmentIterator::_predicate_evaluate_without_late_materialize(v
 FieldPtr SegmentIterator::_make_field(size_t i) {
     DCHECK(_vector_index_ctx != nullptr);
     return std::make_shared<Field>(i, _vector_index_ctx->vector_distance_column_name, get_type_info(TYPE_FLOAT), false);
+}
+
+void SegmentIterator::_compute_brute_force_distances(const Column* vector_column, Chunk* chunk) {
+    DCHECK(_vector_index_ctx != nullptr);
+    const auto& query_vec = _opts.vector_search_option->query_vector;
+    const size_t dim = query_vec.size();
+    const size_t num_rows = vector_column->size();
+
+    bool is_cosine_similarity = _vector_index_ctx->is_cosine_similarity;
+
+    // Unwrap NullableColumn if needed
+    const Column* data_col = vector_column;
+    const uint8_t* null_data = nullptr;
+    if (vector_column->is_nullable()) {
+        const auto* nullable = down_cast<const NullableColumn*>(vector_column);
+        data_col = nullable->data_column().get();
+        if (nullable->has_null()) {
+            null_data = nullable->null_column()->raw_data();
+        }
+    }
+    const auto* array_col = down_cast<const ArrayColumn*>(data_col);
+    const auto& offsets = array_col->offsets().get_data();
+    // elements() may be NullableColumn wrapping FloatColumn. Vector index columns are
+    // ARRAY<FLOAT> with a nullable element column at the schema level, but tenann's
+    // builder rejects a row with any null element at write time. Defensively, if the
+    // elements column actually carries nulls at read time we treat the entire row as
+    // null (sentinel distance) rather than reading whatever undefined float lives in
+    // the slot.
+    const Column* elem_col = &array_col->elements();
+    const uint8_t* elem_null_data = nullptr;
+    if (elem_col->is_nullable()) {
+        const auto* nullable_elem = down_cast<const NullableColumn*>(elem_col);
+        if (nullable_elem->has_null()) {
+            elem_null_data = nullable_elem->null_column()->raw_data();
+        }
+        elem_col = nullable_elem->data_column().get();
+    }
+    const auto* float_col = down_cast<const FloatColumn*>(elem_col);
+    const float* elements_data = float_col->get_data().data();
+
+    FloatColumn::MutablePtr distance_column = FloatColumn::create();
+    distance_column->reserve(num_rows);
+
+    // Pre-compute the query-vector norm once: it is constant across all rows and
+    // brute-force scans can sweep many rows. (cosine path only.)
+    float query_norm = 0.0f;
+    if (is_cosine_similarity) {
+        for (size_t j = 0; j < dim; j++) {
+            query_norm += query_vec[j] * query_vec[j];
+        }
+        query_norm = std::sqrt(query_norm);
+    }
+
+    auto sentinel = is_cosine_similarity ? -1.0f : std::numeric_limits<float>::max();
+    for (size_t i = 0; i < num_rows; i++) {
+        if (null_data && null_data[i]) {
+            // Null vector: use max distance / min similarity as sentinel
+            distance_column->append(sentinel);
+            continue;
+        }
+        const size_t row_offset = offsets[i];
+        size_t vec_dim = offsets[i + 1] - row_offset;
+        // If any element of this row's array is null, treat the whole vector as null.
+        if (elem_null_data != nullptr) {
+            bool has_null_elem = false;
+            for (size_t j = 0; j < vec_dim; j++) {
+                if (elem_null_data[row_offset + j]) {
+                    has_null_elem = true;
+                    break;
+                }
+            }
+            if (has_null_elem) {
+                distance_column->append(sentinel);
+                continue;
+            }
+        }
+        const float* vec = elements_data + row_offset;
+        // tenann's index build validates dim equality at write time, so a row
+        // here with a different dim would point to corruption or a schema/index
+        // mismatch. Truncate to the shorter side and warn rather than crash.
+        if (vec_dim != dim) {
+            LOG_EVERY_N(WARNING, 1024) << "brute-force vector fallback: row " << i << " dim=" << vec_dim
+                                       << " differs from query dim " << dim << " in segment " << _segment->file_name();
+        }
+        size_t calc_dim = std::min(dim, vec_dim);
+
+        if (is_cosine_similarity) {
+            // cosine_similarity = dot(q, v) / (|q| * |v|)
+            float dot = 0, norm_v = 0;
+            for (size_t j = 0; j < calc_dim; j++) {
+                dot += query_vec[j] * vec[j];
+                norm_v += vec[j] * vec[j];
+            }
+            float denom = query_norm * std::sqrt(norm_v);
+            distance_column->append(denom > 0 ? dot / denom : 0.0f);
+        } else {
+            // l2_distance = sum((q[j] - v[j])^2)
+            float dist = 0;
+            for (size_t j = 0; j < calc_dim; j++) {
+                float diff = query_vec[j] - vec[j];
+                dist += diff * diff;
+            }
+            distance_column->append(dist);
+        }
+    }
+
+    chunk->append_vector_column(std::move(distance_column), _make_field(_vector_index_ctx->vector_column_id),
+                                _vector_index_ctx->vector_slot_id);
 }
 
 Status SegmentIterator::_switch_context(ScanContext* to) {
