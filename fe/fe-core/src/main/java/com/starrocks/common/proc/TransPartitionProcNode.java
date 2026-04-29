@@ -34,6 +34,7 @@
 
 package com.starrocks.common.proc;
 
+import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
 import com.starrocks.common.AnalysisException;
 import com.starrocks.server.GlobalStateMgr;
@@ -42,10 +43,14 @@ import com.starrocks.transaction.GlobalTransactionMgr;
 import java.util.ArrayList;
 import java.util.List;
 
-public class TransPartitionProcNode implements ProcNodeInterface {
+public class TransPartitionProcNode implements ProcDirInterface {
     public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>()
             .add("PartitionId")
             .add("CommittedVersion")
+            .add("VisibleVersion")
+            .add("TotalReplicas")
+            .add("PublishedReplicas")
+            .add("ElapsedTime")
             .build();
 
     private long dbId;
@@ -59,10 +64,15 @@ public class TransPartitionProcNode implements ProcNodeInterface {
     }
 
     @Override
+    public boolean register(String name, ProcNodeInterface node) {
+        return false;
+    }
+
+    @Override
     public ProcResult fetchResult() throws AnalysisException {
         GlobalTransactionMgr transactionMgr = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr();
-        List<List<Comparable>> partitionInfos = transactionMgr.getPartitionTransInfo(dbId, tid, tableId);
-        // set result
+        List<List<Comparable>> partitionInfos =
+                transactionMgr.getPartitionTransInfoWithPublishStatus(dbId, tid, tableId);
         BaseProcResult result = new BaseProcResult();
         result.setNames(TITLE_NAMES);
         for (List<Comparable> info : partitionInfos) {
@@ -72,7 +82,20 @@ public class TransPartitionProcNode implements ProcNodeInterface {
             }
             result.addRow(row);
         }
-
         return result;
+    }
+
+    @Override
+    public ProcNodeInterface lookup(String partitionIdStr) throws AnalysisException {
+        if (Strings.isNullOrEmpty(partitionIdStr)) {
+            throw new AnalysisException("Partition id is null");
+        }
+        long partitionId;
+        try {
+            partitionId = Long.parseLong(partitionIdStr);
+        } catch (NumberFormatException e) {
+            throw new AnalysisException("Invalid partition id format: " + partitionIdStr);
+        }
+        return new TransTabletsProcNode(dbId, tid, tableId, partitionId);
     }
 }
