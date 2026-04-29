@@ -49,6 +49,8 @@ public class TransTablesProcDir implements ProcDirInterface {
     public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>()
             .add("TableId")
             .add("CommittedPartitionIds")
+            .add("PublishProgress")
+            .add("BlockedBy")
             .build();
 
     private long dbId;
@@ -68,7 +70,7 @@ public class TransTablesProcDir implements ProcDirInterface {
     public ProcResult fetchResult() throws AnalysisException {
         // get info
         GlobalTransactionMgr transactionMgr = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr();
-        List<List<Comparable>> tableInfos = transactionMgr.getTableTransInfo(dbId, txnId);
+        List<List<Comparable>> tableInfos = transactionMgr.getTableTransInfoWithPublishStatus(dbId, txnId);
         // sort by table id
         ListComparator<List<Comparable>> comparator = new ListComparator<List<Comparable>>(0);
         Collections.sort(tableInfos, comparator);

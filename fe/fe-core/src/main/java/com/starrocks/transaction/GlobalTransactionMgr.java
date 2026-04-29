@@ -845,10 +845,28 @@ public class GlobalTransactionMgr implements MemoryTrackable {
         return dbTransactionMgr.getTableTransInfo(txnId);
     }
 
+    public List<List<Comparable>> getTableTransInfoWithPublishStatus(long dbId, long txnId)
+            throws AnalysisException {
+        DatabaseTransactionMgr dbTransactionMgr = getDatabaseTransactionMgr(dbId);
+        return dbTransactionMgr.getTableTransInfoWithPublishStatus(txnId);
+    }
+
     public List<List<Comparable>> getPartitionTransInfo(long dbId, long tid, long tableId)
             throws AnalysisException {
         DatabaseTransactionMgr dbTransactionMgr = getDatabaseTransactionMgr(dbId);
         return dbTransactionMgr.getPartitionTransInfo(tid, tableId);
+    }
+
+    public List<List<Comparable>> getPartitionTransInfoWithPublishStatus(long dbId, long tid, long tableId)
+            throws AnalysisException {
+        DatabaseTransactionMgr dbTransactionMgr = getDatabaseTransactionMgr(dbId);
+        return dbTransactionMgr.getPartitionTransInfoWithPublishStatus(tid, tableId);
+    }
+
+    public List<List<Comparable>> getTabletTransInfo(long dbId, long txnId, long tableId, long partitionId)
+            throws AnalysisException {
+        DatabaseTransactionMgr dbTransactionMgr = getDatabaseTransactionMgr(dbId);
+        return dbTransactionMgr.getTabletTransInfo(txnId, tableId, partitionId);
     }
 
     public int getTransactionNum() {

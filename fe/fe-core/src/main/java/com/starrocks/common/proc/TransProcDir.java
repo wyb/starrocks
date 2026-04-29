@@ -61,6 +61,9 @@ public class TransProcDir implements ProcDirInterface {
             .add("TimeoutMs")
             .add("PreparedTimeoutMs")
             .add("ErrMsg")
+            .add("FinishedBackends")
+            .add("UnfinishedBackends")
+            .add("BlockedBy")
             .build();
 
     private long dbId;
