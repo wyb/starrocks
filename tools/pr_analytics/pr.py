@@ -45,8 +45,11 @@ import http.client
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.request
 import pymysql
@@ -66,6 +69,17 @@ OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen3.5:9b")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))  # bge-m3 = 1024
+PR_SUMMARY_PROVIDER = os.getenv("PR_SUMMARY_PROVIDER", "codex").lower()
+PR_SUMMARY_BATCH_SIZE = int(os.getenv("PR_SUMMARY_BATCH_SIZE", "5"))
+PR_SUMMARY_TIMEOUT = int(os.getenv("PR_SUMMARY_TIMEOUT", "900"))
+PR_SUMMARY_BATCH_SLEEP = int(os.getenv("PR_SUMMARY_BATCH_SLEEP", "30"))
+PR_SUMMARY_RETRIES = int(os.getenv("PR_SUMMARY_RETRIES", "2"))
+PR_SUMMARY_RETRY_SLEEP = int(os.getenv("PR_SUMMARY_RETRY_SLEEP", "30"))
+PR_SUMMARY_CLEAN_TMP = os.getenv("PR_SUMMARY_CLEAN_TMP", "1").lower() not in ("0", "false", "no")
+CODEX_BIN = os.getenv("CODEX_BIN", "codex")
+GEMINI_BIN = os.getenv("GEMINI_BIN", "gemini")
+CODEX_MODEL = os.getenv("CODEX_MODEL", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "")
 
 REPO = "StarRocks/starrocks"
 RAW_DIR = Path(__file__).parent / "data" / "raw"
@@ -282,6 +296,229 @@ def ollama_summarize(title: str, body: str) -> dict:
     return {"en": single, "zh": single}
 
 
+def _fallback_searchable_text(row: dict, english_summary: str, chinese_summary: str, diff_keywords: str = "") -> str:
+    parts = [
+        row.get("title", ""),
+        english_summary,
+        chinese_summary,
+        diff_keywords,
+    ]
+    return "\n".join(p for p in parts if p)
+
+
+def _normalize_summary_item(row: dict, item: dict) -> dict:
+    """Normalize summarizer output while keeping existing pr_data summary column names."""
+    english = item.get("english_summary") or item.get("ai_summary_en") or item.get("en") or ""
+    chinese = item.get("chinese_summary") or item.get("ai_summary") or item.get("zh") or ""
+    diff_keywords = item.get("diff_keywords") or ""
+    searchable_text = item.get("searchable_text") or _fallback_searchable_text(
+        row, english, chinese, diff_keywords)
+
+    if not english or not chinese or not searchable_text:
+        raise RuntimeError(
+            f"Invalid summary for PR #{row['pr_number']}: missing english_summary, "
+            "chinese_summary, or searchable_text")
+
+    return {
+        "pr_number": int(item.get("pr_number") or row["pr_number"]),
+        "title": item.get("title") or row.get("title", ""),
+        "ai_summary": chinese,
+        "ai_summary_en": english,
+        "diff_keywords": diff_keywords,
+        "searchable_text": searchable_text,
+    }
+
+
+def _load_summary_json(text: str) -> list[dict]:
+    """Parse a JSON array, tolerating accidental text around the array."""
+    text = text.strip()
+    if not text:
+        raise RuntimeError("Summarizer returned empty output")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("[")
+        end = text.rfind("]")
+        if start < 0 or end < start:
+            raise
+        data = json.loads(text[start:end + 1])
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        raise RuntimeError("Summarizer output must be a JSON array")
+    return data
+
+
+def _format_batch_progress(batch_index: int | None, batch_total: int | None) -> str:
+    if batch_index is None or batch_total is None:
+        return ""
+    return f" [{batch_index}/{batch_total}]"
+
+
+def _snapshot_prjson_tmp_dirs() -> set[Path]:
+    cwd = Path.cwd().resolve()
+    return {
+        p.resolve()
+        for p in cwd.iterdir()
+        if p.is_dir() and p.name.startswith("tmp_req_") and p.parent.resolve() == cwd
+    }
+
+
+def _tmp_dir_matches_pr_batch(path: Path, pr_numbers: list[int]) -> bool:
+    tokens = set(re.findall(r"\d+", path.name))
+    return all(str(n) in tokens for n in pr_numbers)
+
+
+def _cleanup_prjson_tmp_dirs(before: set[Path], pr_numbers: list[int]):
+    if not PR_SUMMARY_CLEAN_TMP:
+        return
+    cwd = Path.cwd().resolve()
+    for path in sorted(_snapshot_prjson_tmp_dirs() - before):
+        if path.parent.resolve() != cwd or not path.name.startswith("tmp_req_"):
+            continue
+        if not _tmp_dir_matches_pr_batch(path, pr_numbers):
+            continue
+        try:
+            shutil.rmtree(path)
+            print(f"    Removed temporary PR JSON directory: {path.name}")
+        except OSError as e:
+            print(f"    Warning: failed to remove temporary directory {path}: {e}")
+
+
+def _run_summarizer_json(cmd: list[str], provider: str, nums: str, pr_numbers: list[int], out: Path = None) -> list[dict]:
+    attempts = PR_SUMMARY_RETRIES + 1
+    last_error = None
+    tmp_dirs_before = _snapshot_prjson_tmp_dirs()
+    for attempt in range(1, attempts + 1):
+        try:
+            if out is not None and out.exists():
+                out.unlink()
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=PR_SUMMARY_TIMEOUT)
+            if result.returncode == 0:
+                if out is not None and not out.exists():
+                    raise RuntimeError(f"{provider} did not write summary output: {out}")
+                text = out.read_text() if out is not None else result.stdout
+                try:
+                    data = _load_summary_json(text)
+                    _cleanup_prjson_tmp_dirs(tmp_dirs_before, pr_numbers)
+                    return data
+                except json.JSONDecodeError as e:
+                    bad_file = None
+                    if out is not None:
+                        bad_file = out.with_suffix(out.suffix + f".bad_attempt_{attempt}")
+                        bad_file.write_text(text)
+                    msg = f"{provider} returned invalid JSON for PR batch {nums}: {e}"
+                    if bad_file is not None:
+                        msg += f" (saved to {bad_file})"
+                    raise RuntimeError(msg)
+
+            stderr = result.stderr.strip()
+            stdout = result.stdout.strip()
+            if provider == "Codex" and "SyntaxError: Unexpected reserved word" in stderr and "@openai/codex" in stderr:
+                raise RuntimeError(
+                    "Codex CLI failed before running the PR summarizer. The installed codex command "
+                    "is the npm package @openai/codex, and the active Node.js runtime is too old for "
+                    "its top-level await syntax. Run `node -v` and use Node.js 18+ (preferably 20+), "
+                    "or set CODEX_BIN to a codex executable that works in this environment."
+                )
+            raise RuntimeError(stderr or stdout or f"{provider} exited with code {result.returncode}")
+        except subprocess.TimeoutExpired as e:
+            last_error = RuntimeError(
+                f"{provider} PR summary batch timed out after {PR_SUMMARY_TIMEOUT}s: {nums}")
+        except RuntimeError as e:
+            last_error = e
+
+        if attempt < attempts:
+            print(f"    {provider} summary batch failed (attempt {attempt}/{attempts}): {last_error}")
+            if PR_SUMMARY_RETRY_SLEEP > 0:
+                print(f"    Sleeping {PR_SUMMARY_RETRY_SLEEP}s before retry ...")
+                time.sleep(PR_SUMMARY_RETRY_SLEEP)
+
+    raise last_error
+
+
+def _summarize_batch_ollama(rows: list[dict], batch_index: int = None, batch_total: int = None) -> dict[int, dict]:
+    result = {}
+    for row in rows:
+        print(f"    Summarizing PR #{row['pr_number']} with Ollama{_format_batch_progress(batch_index, batch_total)} ...")
+        summaries = ollama_summarize(row["title"], row.get("body") or "")
+        item = _normalize_summary_item(row, {
+            "pr_number": row["pr_number"],
+            "title": row["title"],
+            "english_summary": summaries["en"],
+            "chinese_summary": summaries["zh"],
+            "diff_keywords": "",
+            "searchable_text": _fallback_searchable_text(row, summaries["en"], summaries["zh"]),
+        })
+        result[row["pr_number"]] = item
+    return result
+
+
+def _summarize_batch_codex(rows: list[dict], batch_index: int = None, batch_total: int = None) -> dict[int, dict]:
+    pr_numbers = [int(r["pr_number"]) for r in rows]
+    nums = ",".join(str(n) for n in pr_numbers)
+    prompt = f"用 pr-json-summarizer 分析 pr {nums}"
+    out = Path(tempfile.gettempdir()) / f"pr_summary_codex_{os.getpid()}_{pr_numbers[0]}_{pr_numbers[-1]}.json"
+    cmd = [
+        CODEX_BIN, "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-o", str(out),
+    ]
+    if CODEX_MODEL:
+        cmd.extend(["--model", CODEX_MODEL])
+    cmd.append(prompt)
+    print(f"    Summarizing PR batch with Codex{_format_batch_progress(batch_index, batch_total)}: {nums}")
+    items = _run_summarizer_json(cmd, "Codex", nums, pr_numbers, out)
+    rows_by_pr = {int(r["pr_number"]): r for r in rows}
+    return {
+        int(item["pr_number"]): _normalize_summary_item(rows_by_pr[int(item["pr_number"])], item)
+        for item in items
+    }
+
+
+def _summarize_batch_gemini(rows: list[dict], batch_index: int = None, batch_total: int = None) -> dict[int, dict]:
+    pr_numbers = [int(r["pr_number"]) for r in rows]
+    nums = ",".join(str(n) for n in pr_numbers)
+    prompt = f"用 pr-json-summarizer 分析 pr {nums}"
+    cmd = [
+        GEMINI_BIN,
+        "--approval-mode", "yolo",
+        "--output-format", "text",
+    ]
+    if GEMINI_MODEL:
+        cmd.extend(["--model", GEMINI_MODEL])
+    cmd.extend(["-p", prompt])
+    print(f"    Summarizing PR batch with Gemini{_format_batch_progress(batch_index, batch_total)}: {nums}")
+    items = _run_summarizer_json(cmd, "Gemini", nums, pr_numbers)
+    rows_by_pr = {int(r["pr_number"]): r for r in rows}
+    return {
+        int(item["pr_number"]): _normalize_summary_item(rows_by_pr[int(item["pr_number"])], item)
+        for item in items
+    }
+
+
+def summarize_pr_batch(rows: list[dict], batch_index: int = None, batch_total: int = None) -> dict[int, dict]:
+    if PR_SUMMARY_PROVIDER == "ollama":
+        return _summarize_batch_ollama(rows, batch_index, batch_total)
+    if PR_SUMMARY_PROVIDER == "codex":
+        return _summarize_batch_codex(rows, batch_index, batch_total)
+    if PR_SUMMARY_PROVIDER == "gemini":
+        return _summarize_batch_gemini(rows, batch_index, batch_total)
+    raise RuntimeError(f"Unsupported PR_SUMMARY_PROVIDER: {PR_SUMMARY_PROVIDER}")
+
+
+def _chunks(items: list, size: int):
+    if size <= 0:
+        raise RuntimeError("PR_SUMMARY_BATCH_SIZE must be positive")
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _is_current_enriched(row: dict) -> bool:
+    required = ("ai_summary", "ai_summary_en", "searchable_text", "embedding")
+    return all(row.get(k) for k in required)
+
+
 def parse_dt(s: str | None) -> str | None:
     """Parse ISO datetime string to 'YYYY-MM-DD HH:MM:SS' in UTC+8."""
     if not s:
@@ -451,8 +688,8 @@ def _enrich_file(file_path: Path, output: Path = None):
                 existing[r["pr_number"]] = r
 
     enriched_rows = []
+    pending_rows = []
     total = len(raw_rows)
-    new_count = 0
     skip_backport = 0
     for i, row in enumerate(raw_rows):
         pr_num = row["pr_number"]
@@ -463,34 +700,41 @@ def _enrich_file(file_path: Path, output: Path = None):
             skip_backport += 1
             continue
 
-        # Skip already enriched
-        if pr_num in existing:
+        # Skip already enriched with the current schema
+        if pr_num in existing and _is_current_enriched(existing[pr_num]):
             enriched_rows.append(existing[pr_num])
             continue
 
-        title = row["title"]
-        body = row.get("body") or ""
-        print(f"  [{i+1}/{total}] PR #{pr_num}: {title[:80]}...")
+        print(f"  [{i+1}/{total}] PR #{pr_num}: pending - {row['title'][:80]}...")
+        pending_rows.append(row)
 
-        # AI summary (Chinese + English)
-        print(f"    Summarizing ...")
-        summaries = ollama_summarize(title, body)
-        print(f"    zh: {summaries['zh'][:80]}...")
-        print(f"    en: {summaries['en'][:80]}...")
+    new_count = 0
+    batches = list(_chunks(pending_rows, PR_SUMMARY_BATCH_SIZE))
+    for batch_index, batch in enumerate(batches, start=1):
+        if batch_index > 1 and PR_SUMMARY_BATCH_SLEEP > 0:
+            print(f"    Sleeping {PR_SUMMARY_BATCH_SLEEP}s before next PR summary batch ...")
+            time.sleep(PR_SUMMARY_BATCH_SLEEP)
+        summaries_by_pr = summarize_pr_batch(batch, batch_index, len(batches))
+        for row in batch:
+            pr_num = row["pr_number"]
+            if pr_num not in summaries_by_pr:
+                raise RuntimeError(f"Summarizer did not return PR #{pr_num}")
+            summary = summaries_by_pr[pr_num]
+            print(f"    Embedding PR #{pr_num} ...")
+            embedding = ollama_embed(summary["searchable_text"])
 
-        # Embedding (title + English summary for better semantic matching)
-        print(f"    Embedding ...")
-        embed_text = f"{title}\n{summaries['en']}"
-        embedding = ollama_embed(embed_text)
+            enriched_row = {
+                **row,
+                "ai_summary": summary["ai_summary"],
+                "ai_summary_en": summary["ai_summary_en"],
+                "diff_keywords": summary.get("diff_keywords", ""),
+                "searchable_text": summary["searchable_text"],
+                "embedding": embedding,
+            }
+            enriched_rows.append(enriched_row)
+            new_count += 1
 
-        enriched_row = {**row,
-                        "ai_summary": summaries["zh"],
-                        "ai_summary_en": summaries["en"],
-                        "embedding": embedding}
-        enriched_rows.append(enriched_row)
-        new_count += 1
-
-        # Save progress after each PR (resume-friendly)
+        # Save progress after each batch (resume-friendly)
         with open(out_file, "w") as f:
             json.dump(enriched_rows, f, ensure_ascii=False, indent=2)
 
@@ -556,6 +800,8 @@ CREATE TABLE pr_data (
     version         VARCHAR(64)    NOT NULL DEFAULT 'main' COMMENT '版本: main/4.1.1/...',
     ai_summary      VARCHAR(65533) COMMENT 'AI中文摘要',
     ai_summary_en   VARCHAR(65533) COMMENT 'AI英文摘要',
+    diff_keywords   VARCHAR(65533) COMMENT '结构化检索关键词, 用于展示和诊断',
+    searchable_text STRING         COMMENT '用于 embedding 和全文检索的合并文本',
     body            STRING         COMMENT 'PR描述',
     embedding       ARRAY<FLOAT>   NOT NULL COMMENT '向量 dim={EMBEDDING_DIM}',
     INDEX vec_idx (embedding) USING VECTOR (
@@ -565,9 +811,7 @@ CREATE TABLE pr_data (
         "M" = "16",
         "dim" = "{EMBEDDING_DIM}"
     ),
-    INDEX title_idx (title) USING GIN("parser" = "english", "imp_lib" = "builtin"),
-    INDEX summary_idx (ai_summary) USING GIN("parser" = "chinese", "imp_lib" = "builtin"),
-    INDEX summary_en_idx (ai_summary_en) USING GIN("parser" = "english", "imp_lib" = "builtin")
+    INDEX searchable_text_idx (searchable_text) USING GIN("parser" = "standard", "imp_lib" = "builtin")
 ) ENGINE = OLAP
 PRIMARY KEY(pr_number)
 DISTRIBUTED BY HASH(pr_number) BUCKETS 1
