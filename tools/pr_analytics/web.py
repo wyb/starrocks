@@ -101,6 +101,8 @@ def ollama_analyze_fix(query: str, prs: list[dict]) -> str:
         context += f"Summary: {pr.get('ai_summary', '')}\n"
         if pr.get("ai_summary_en"):
             context += f"English Summary: {pr['ai_summary_en']}\n"
+        if pr.get("diff_keywords"):
+            context += f"Diff Keywords: {pr['diff_keywords']}\n"
         context += "\n"
 
     prompt = f"""
@@ -166,7 +168,8 @@ def search_vector(query: str, top_k: int, filters: dict) -> list[dict]:
 
     sql = f"""
 SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
-       d.ai_summary, d.ai_summary_en, d.merged_at, d.additions, d.deletions, d.changed_files,
+       d.ai_summary, d.ai_summary_en, d.diff_keywords,
+       d.merged_at, d.additions, d.deletions, d.changed_files,
        approx_cosine_similarity(d.embedding, ARRAY<FLOAT>{vec_str}) AS score
 FROM pr_data d
 {join_clause}
@@ -178,7 +181,7 @@ LIMIT {top_k};
 
 
 def search_sql(filters: dict, top_k: int) -> list[dict]:
-    def build_where_clause(mode, field, kw):
+    def build_where_clause(mode, kw):
         clauses = ["1=1"]
         if filters.get("pr_number"):
             clauses.append(f"d.pr_number = {int(filters['pr_number'])}")
@@ -194,11 +197,11 @@ def search_sql(filters: dict, top_k: int) -> list[dict]:
             clauses.append(f"d.merged_at <= '{filters['until']} 23:59:59'")
 
         if mode == "like":
-            clauses.append(f"(lower(d.title) LIKE lower('%{kw}%') OR lower(d.ai_summary) LIKE lower('%{kw}%') OR lower(d.ai_summary_en) LIKE lower('%{kw}%'))")
+            clauses.append(f"lower(d.searchable_text) LIKE lower('%{kw}%')")
         elif mode == "all":
-            clauses.append(f"d.{field} MATCH_ALL '{kw}'")
+            clauses.append(f"d.searchable_text MATCH_ALL '{kw}'")
         elif mode == "any":
-            clauses.append(f"d.{field} MATCH_ANY '{kw}'")
+            clauses.append(f"d.searchable_text MATCH_ANY '{kw}'")
 
         return " AND ".join(clauses)
 
@@ -211,7 +214,8 @@ def search_sql(filters: dict, top_k: int) -> list[dict]:
 
         sql = f"""
 SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
-       d.ai_summary, d.ai_summary_en, d.merged_at, d.additions, d.deletions, d.changed_files
+       d.ai_summary, d.ai_summary_en, d.diff_keywords,
+       d.merged_at, d.additions, d.deletions, d.changed_files
 FROM pr_data d
 {join_clause}
 WHERE {where_stmt} {v_filter}
@@ -224,40 +228,32 @@ LIMIT {top_k};
     mode = filters.get("match_mode", "auto")
 
     if not kw:
-        return execute(build_where_clause("none", None, ""))
+        return execute(build_where_clause("none", ""))
 
     # Mode: LIKE
     if mode == "like":
-        return execute(build_where_clause("like", None, kw))
+        return execute(build_where_clause("like", kw))
 
     # Mode: MATCH ALL
     if mode == "all":
-        for field in ["title", "ai_summary", "ai_summary_en"]:
-            res = execute(build_where_clause("all", field, kw))
-            if res: return res
-        return []
+        return execute(build_where_clause("all", kw))
 
     # Mode: MATCH ANY
     if mode == "any":
-        for field in ["title", "ai_summary", "ai_summary_en"]:
-            res = execute(build_where_clause("any", field, kw))
-            if res: return res
-        return []
+        return execute(build_where_clause("any", kw))
 
     # Mode: AUTO (LIKE -> ALL -> ANY)
     # 1. Try LIKE
-    res = execute(build_where_clause("like", None, kw))
+    res = execute(build_where_clause("like", kw))
     if res: return res
 
-    # 2. Try MATCH ALL (Priority)
-    for field in ["title", "ai_summary", "ai_summary_en"]:
-        res = execute(build_where_clause("all", field, kw))
-        if res: return res
+    # 2. Try MATCH ALL
+    res = execute(build_where_clause("all", kw))
+    if res: return res
 
-    # 3. Try MATCH ANY (Priority)
-    for field in ["title", "ai_summary", "ai_summary_en"]:
-        res = execute(build_where_clause("any", field, kw))
-        if res: return res
+    # 3. Try MATCH ANY
+    res = execute(build_where_clause("any", kw))
+    if res: return res
 
     return []
 
@@ -304,7 +300,8 @@ def attach_versions(results: list) -> list:
 def get_pr_detail(pr_number: int) -> dict | None:
     rows = sr_query(f"""
 SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
-       d.ai_summary, d.ai_summary_en, d.body, d.merged_at, d.additions,
+       d.ai_summary, d.ai_summary_en, d.diff_keywords, d.searchable_text,
+       d.body, d.merged_at, d.additions,
        d.deletions, d.changed_files
 FROM pr_data d
 WHERE d.pr_number = {pr_number}
@@ -409,6 +406,24 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 .badge-score { background: #fef7e0; color: #b06000; }
 .meta { font-size: 13px; color: #666; margin-bottom: 6px; }
 .summary { font-size: 14px; color: #444; line-height: 1.5; }
+.details-row { margin-top: 8px; }
+.details-actions { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.detail-toggle { color: #666; font-size: 12px; font-weight: 500; }
+.detail-toggle summary { cursor: pointer; outline: none; }
+.detail-toggle summary:hover { text-decoration: underline; }
+.detail-content { margin-top: 6px; }
+.detail-content.hidden { display: none; }
+.english-detail { font-size: 14px; color: #888; line-height: 1.5; }
+.keywords-detail table { width: 100%; border-collapse: collapse; background: #fff;
+                         border-top: 1px solid #f1f3f4; border-bottom: 1px solid #f1f3f4;
+                         border-left: 3px solid #dadce0; font-size: 14px; }
+.keywords-detail th, .keywords-detail td { border-bottom: 1px solid #f1f3f4; padding: 6px 8px;
+                                           vertical-align: top; line-height: 1.45; text-align: left; }
+.keywords-detail th { width: 92px; color: #888; font-weight: 600; white-space: nowrap; }
+.keywords-detail td { color: #888; white-space: pre-wrap; overflow-wrap: anywhere; }
+.keywords-detail pre { font-size: 14px; line-height: 1.45; white-space: pre-wrap; background: #fff;
+                       border-left: 3px solid #dadce0; padding: 8px 10px;
+                       border-radius: 4px; font-family: inherit; color: #888; }
 .score-bar-bg { display: inline-block; width: 60px; height: 6px; background: #e8eaed; border-radius: 3px; vertical-align: middle; position: relative; }
 .score-bar { display: block; height: 6px; background: #1a73e8; border-radius: 3px; position: absolute; top: 0; left: 0; }
 
@@ -634,10 +649,55 @@ function renderResultsIn(results, showScore, container) {
                 &nbsp;|&nbsp; ${r.changed_files || 0} files
             </div>
             <div class="summary">${escHtml(r.ai_summary || '')}</div>
-            ${r.ai_summary_en ? '<div class="summary" style="color:#888;margin-top:4px;">' + escHtml(r.ai_summary_en) + '</div>' : ''}
+            ${(r.ai_summary_en || r.diff_keywords) ? renderDetailPanel(r, i) : ''}
         </div>`;
     });
     container.innerHTML += html;
+}
+
+function renderDetailPanel(r, i) {
+    const prefix = 'detail-' + r.pr_number + '-' + i;
+    let actions = '';
+    let bodies = '';
+    if (r.ai_summary_en) {
+        const id = prefix + '-en';
+        actions += '<details class="detail-toggle" data-target="' + id + '" ontoggle="toggleDetailFromSummary(this)"><summary>english summary</summary></details>';
+        bodies += '<div id="' + id + '" class="detail-content english-detail hidden">' + escHtml(r.ai_summary_en) + '</div>';
+    }
+    if (r.diff_keywords) {
+        const id = prefix + '-kw';
+        actions += '<details class="detail-toggle" data-target="' + id + '" ontoggle="toggleDetailFromSummary(this)"><summary>diff keywords</summary></details>';
+        bodies += '<div id="' + id + '" class="detail-content keywords-detail hidden">' + renderDiffKeywordsBody(r.diff_keywords) + '</div>';
+    }
+    return '<div class="details-row"><div class="details-actions">' + actions + '</div>' + bodies + '</div>';
+}
+
+function toggleDetailFromSummary(summaryEl) {
+    const el = document.getElementById(summaryEl.dataset.target);
+    if (el) el.classList.toggle('hidden');
+}
+
+function renderDiffKeywordsBody(text) {
+    const rows = [];
+    (text || '').split(/\\n+/).forEach(line => {
+        const m = line.match(/^([A-Za-z_ -]+):\\s*(.*)$/);
+        if (m) rows.push({ key: m[1].trim(), value: m[2].trim() });
+    });
+    if (rows.length === 0) {
+        return '<pre>' + escHtml(text) + '</pre>';
+    }
+    const order = ['symptom', 'cause', 'fix', 'symbols', 'files', 'keywords'];
+    rows.sort((a, b) => {
+        const ai = order.indexOf(a.key.toLowerCase());
+        const bi = order.indexOf(b.key.toLowerCase());
+        const av = ai === -1 ? order.length : ai;
+        const bv = bi === -1 ? order.length : bi;
+        return av - bv || a.key.localeCompare(b.key);
+    });
+    const table = rows.map(r =>
+        '<tr><th>' + escHtml(r.key) + '</th><td>' + escHtml(r.value) + '</td></tr>'
+    ).join('');
+    return '<table>' + table + '</table>';
 }
 
 function escHtml(s) {
