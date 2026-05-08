@@ -49,7 +49,8 @@ public class TransTablesProcDir implements ProcDirInterface {
     public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>()
             .add("TableId")
             .add("CommittedPartitionIds")
-            .add("PublishProgress")
+            .add("FinishedPartitions")
+            .add("UnfinishedPartitions")
             .add("BlockedBy")
             .build();
 

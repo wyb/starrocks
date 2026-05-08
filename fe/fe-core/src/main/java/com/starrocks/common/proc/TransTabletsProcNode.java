@@ -27,6 +27,7 @@ public class TransTabletsProcNode implements ProcNodeInterface {
             .add("TabletId")
             .add("BackendId")
             .add("PublishStatus")
+            .add("ErrorMsg")
             .add("ElapsedTime")
             .build();
 

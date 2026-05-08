@@ -48,8 +48,8 @@ public class TransPartitionProcNode implements ProcDirInterface {
             .add("PartitionId")
             .add("CommittedVersion")
             .add("VisibleVersion")
-            .add("TotalReplicas")
-            .add("PublishedReplicas")
+            .add("FinishedBackends")
+            .add("UnfinishedBackends")
             .add("ElapsedTime")
             .build();
 

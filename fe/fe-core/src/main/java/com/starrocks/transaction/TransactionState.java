@@ -74,6 +74,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -271,6 +272,9 @@ public class TransactionState implements Writable, GsonPreProcessable {
 
     // these states need not be serialized
     private final Map<Long, PublishVersionTask> publishVersionTasks; // Only for OlapTable
+    // Per-partition per-CN publish status for LakeTable (shared-data mode), runtime only
+    // Map<partitionId, Map<nodeId, LakePublishStatus>>
+    private final Map<Long, Map<Long, LakePublishStatus>> lakePartitionPublishTasks = new HashMap<>();
     private boolean hasSendTask;
     private long publishVersionTime = -1;
     private long publishVersionFinishTime = -1;
@@ -1141,8 +1145,17 @@ public class TransactionState implements Writable, GsonPreProcessable {
         return publishVersionTasks;
     }
 
+    public Map<Long, Map<Long, LakePublishStatus>> getLakePartitionPublishTasks() {
+        return lakePartitionPublishTasks;
+    }
+
+    public void setLakePartitionPublishStatus(long partitionId, Map<Long, LakePublishStatus> nodeStatusMap) {
+        lakePartitionPublishTasks.put(partitionId, nodeStatusMap);
+    }
+
     public void clearAfterPublished() {
         publishVersionTasks.clear();
+        lakePartitionPublishTasks.clear();
         finishChecker = null;
     }
 

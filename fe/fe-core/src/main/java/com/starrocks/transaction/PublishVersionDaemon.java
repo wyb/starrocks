@@ -1081,6 +1081,12 @@ public class PublishVersionDaemon extends LeaderDaemon {
             locker.unLockTablesWithIntensiveDbLock(db.getId(), Lists.newArrayList(tableId), LockType.READ);
         }
 
+        // Build tablet-to-CN mapping for observability
+        long partitionId = partitionCommitInfo.getPhysicalPartitionId();
+        Map<Long, LakePublishStatus> nodeStatusMap = buildNodePublishStatusMap(
+                normalTablets, shadowTablets, computeResource);
+        txnState.setLakePartitionPublishStatus(partitionId, nodeStatusMap);
+
         TxnInfoPB txnInfo = TxnInfoHelper.fromTransactionState(txnState);
         try {
             if (CollectionUtils.isNotEmpty(shadowTablets)) {
@@ -1101,8 +1107,17 @@ public class PublishVersionDaemon extends LeaderDaemon {
                     partitionCommitInfo.getTabletIdToRowCountForPartitionFirstLoad().putAll(tabletRowNums);
                 }
             }
+            // Mark all CN statuses as FINISHED
+            for (LakePublishStatus status : nodeStatusMap.values()) {
+                status.setStatus(LakePublishStatus.Status.FINISHED);
+            }
             return true;
         } catch (Throwable e) {
+            // Mark all CN statuses as FAILED
+            for (LakePublishStatus status : nodeStatusMap.values()) {
+                status.setStatus(LakePublishStatus.Status.FAILED);
+                status.setErrorMsg(e.getMessage());
+            }
             // Avoid holding txn write lock here; setting errMsg is best-effort for diagnostics
             txnState.setErrorMsg("Fail to publish partition " + partitionCommitInfo.getPhysicalPartitionId()
                     + " error " + e.getMessage());
@@ -1115,6 +1130,37 @@ public class PublishVersionDaemon extends LeaderDaemon {
                     txnId, e.getMessage());
             return false;
         }
+    }
+
+    /**
+     * Build a map of CN node ID -> LakePublishStatus for observability.
+     * Records which tablets each CN is responsible for publishing.
+     */
+    private Map<Long, LakePublishStatus> buildNodePublishStatusMap(
+            List<Tablet> normalTablets, List<Tablet> shadowTablets, ComputeResource computeResource) {
+        Map<Long, LakePublishStatus> nodeStatusMap = new HashMap<>();
+        WarehouseManager warehouseManager = GlobalStateMgr.getCurrentState().getWarehouseMgr();
+        List<Tablet> allTablets = new ArrayList<>();
+        if (normalTablets != null) {
+            allTablets.addAll(normalTablets);
+        }
+        if (shadowTablets != null) {
+            allTablets.addAll(shadowTablets);
+        }
+        for (Tablet tablet : allTablets) {
+            try {
+                ComputeNode node = Utils.getComputeNode(tablet.getId(), computeResource, warehouseManager);
+                LakePublishStatus status = nodeStatusMap.computeIfAbsent(node.getId(), k -> {
+                    LakePublishStatus s = new LakePublishStatus();
+                    s.setTabletIds(new ArrayList<>());
+                    return s;
+                });
+                status.getTabletIds().add(tablet.getId());
+            } catch (Exception e) {
+                LOG.warn("Failed to get compute node for tablet {} during publish status tracking", tablet.getId(), e);
+            }
+        }
+        return nodeStatusMap;
     }
 
     /**

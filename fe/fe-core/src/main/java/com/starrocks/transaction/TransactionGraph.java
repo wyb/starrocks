@@ -19,6 +19,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -146,6 +147,17 @@ public class TransactionGraph {
                 nodesWithoutIns.add(next);
             }
         }
+    }
+
+    /**
+     * Get the set of transaction IDs that the given transaction depends on (is blocked by).
+     */
+    public Set<Long> getBlockedByTxnIds(long txnId) {
+        Node node = nodes.get(txnId);
+        if (node == null || node.ins == null || node.ins.isEmpty()) {
+            return Collections.emptySet();
+        }
+        return node.ins.stream().map(n -> n.txnId).collect(Collectors.toSet());
     }
 
     public List<Long> getTxnsWithoutDependency() {

@@ -825,28 +825,10 @@ public class DatabaseTransactionMgr {
         info.add(String.valueOf(txnState.getPreparedTimeoutMs()));
         info.add(txnState.getErrMsg());
 
-        // FinishedBackends, UnfinishedBackends, BlockedBy — only for COMMITTED transactions
+        // BlockedBy — only for COMMITTED transactions
         if (txnState.getTransactionStatus() == TransactionStatus.COMMITTED) {
-            Map<Long, PublishVersionTask> tasks = txnState.getPublishVersionTasks();
-            List<Long> finishedBackends = new ArrayList<>();
-            List<Long> unfinishedBackends = new ArrayList<>();
-            for (Map.Entry<Long, PublishVersionTask> entry : tasks.entrySet()) {
-                if (entry.getValue().isFinished()) {
-                    finishedBackends.add(entry.getKey());
-                } else {
-                    unfinishedBackends.add(entry.getKey());
-                }
-            }
-            info.add(finishedBackends.isEmpty() ? "" :
-                    finishedBackends.stream().map(String::valueOf).collect(Collectors.joining(",")));
-            info.add(unfinishedBackends.isEmpty() ? "" :
-                    unfinishedBackends.stream().map(String::valueOf).collect(Collectors.joining(",")));
-
-            // BlockedBy
             info.add(getBlockedByTxns(txnState, partitionToTxns));
         } else {
-            info.add("");
-            info.add("");
             info.add("");
         }
     }
@@ -872,13 +854,29 @@ public class DatabaseTransactionMgr {
     }
 
     /**
-     * Compute BlockedBy for a transaction based on partition-level dependency.
-     * A transaction is blocked by another if they write the same partition and the other has a smaller commitVersion.
+     * Compute BlockedBy for a transaction.
+     * Shared-nothing: partition-level dependency based on commit version comparison.
+     * Shared-data: uses TransactionGraph directly.
      */
     private String getBlockedByTxns(TransactionState targetTxn,
                                     @Nullable Map<Long, List<TransactionState>> partitionToTxns) {
+        Set<Long> blockedBy;
+        if (RunMode.isSharedDataMode()) {
+            blockedBy = transactionGraph.getBlockedByTxnIds(targetTxn.getTransactionId());
+        } else {
+            blockedBy = getBlockedByTxnsFromPartitionMap(targetTxn, partitionToTxns);
+        }
+        return blockedBy.isEmpty() ? "" :
+                blockedBy.stream().map(String::valueOf).collect(Collectors.joining(","));
+    }
+
+    /**
+     * Compute BlockedBy using partition-level version comparison (shared-nothing mode).
+     */
+    private Set<Long> getBlockedByTxnsFromPartitionMap(TransactionState targetTxn,
+                                                       @Nullable Map<Long, List<TransactionState>> partitionToTxns) {
         if (partitionToTxns == null) {
-            return "";
+            return Collections.emptySet();
         }
         Set<Long> blockedBy = Sets.newHashSet();
         for (TableCommitInfo tableInfo : targetTxn.getIdToTableCommitInfos().values()) {
@@ -903,8 +901,7 @@ public class DatabaseTransactionMgr {
                 }
             }
         }
-        return blockedBy.isEmpty() ? "" :
-                blockedBy.stream().map(String::valueOf).collect(Collectors.joining(","));
+        return blockedBy;
     }
 
     public TransactionStateSnapshot getLabelState(String label) {
@@ -1816,19 +1813,16 @@ public class DatabaseTransactionMgr {
                 throw new AnalysisException("Transaction[" + txnId + "] does not exist.");
             }
 
-            // Build partition dependency map for BlockedBy
-            Map<Long, List<TransactionState>> partitionToTxns = buildPartitionToTxnMap();
+            // Build partition dependency map for BlockedBy (shared-nothing only)
+            Map<Long, List<TransactionState>> partitionToTxns =
+                    RunMode.isSharedDataMode() ? null : buildPartitionToTxnMap();
 
-            // Collect publish task state
-            Map<Long, PublishVersionTask> publishTasks = transactionState.getPublishVersionTasks();
+            // Collect finished backends from publish tasks (shared-nothing only)
             Set<Long> finishedBackends = Sets.newHashSet();
-            Set<Long> errorReplicaIds = Sets.newHashSet();
-            for (Map.Entry<Long, PublishVersionTask> entry : publishTasks.entrySet()) {
-                if (entry.getValue().isFinished()) {
-                    finishedBackends.add(entry.getKey());
-                    Set<Long> errReplicas = entry.getValue().getErrorReplicas();
-                    if (errReplicas != null) {
-                        errorReplicaIds.addAll(errReplicas);
+            if (RunMode.isSharedNothingMode()) {
+                for (Map.Entry<Long, PublishVersionTask> entry : transactionState.getPublishVersionTasks().entrySet()) {
+                    if (entry.getValue().isFinished()) {
+                        finishedBackends.add(entry.getKey());
                     }
                 }
             }
@@ -1841,64 +1835,30 @@ public class DatabaseTransactionMgr {
                 tableInfo.add(Joiner.on(", ").join(tableCommitInfo.getIdToPartitionCommitInfo().values().stream().map(
                         PartitionCommitInfo::getPhysicalPartitionId).collect(Collectors.toList())));
 
-                // PublishProgress per table — count replicas using canTxnFinished logic
-                int totalReplicas = 0;
-                int publishedReplicas = 0;
+                // FinishedPartitions / UnfinishedPartitions
                 if (transactionState.getTransactionStatus() == TransactionStatus.COMMITTED) {
-                    OlapTable table = (OlapTable) globalStateMgr.getLocalMetastore()
-                            .getTable(transactionState.getDbId(), tableId);
-                    if (table != null) {
-                        for (PartitionCommitInfo partInfo : tableCommitInfo.getIdToPartitionCommitInfo().values()) {
-                            PhysicalPartition partition = table.getPhysicalPartition(
-                                    partInfo.getPhysicalPartitionId());
-                            if (partition == null) {
-                                continue;
-                            }
-                            List<MaterializedIndex> allIndices =
-                                    transactionState.getPartitionLoadedIndexes(tableId, partition);
-                            for (MaterializedIndex index : allIndices) {
-                                for (Tablet tablet : index.getTablets()) {
-                                    for (Replica replica : ((LocalTablet) tablet).getImmutableReplicas()) {
-                                        totalReplicas++;
-                                        if (isReplicaPublished(replica, partition, partInfo,
-                                                finishedBackends, errorReplicaIds)) {
-                                            publishedReplicas++;
-                                        }
-                                    }
-                                }
-                            }
+                    List<Long> finished = new ArrayList<>();
+                    List<Long> unfinished = new ArrayList<>();
+                    for (PartitionCommitInfo partInfo : tableCommitInfo.getIdToPartitionCommitInfo().values()) {
+                        long partId = partInfo.getPhysicalPartitionId();
+                        if (isPartitionPublished(transactionState, partId, finishedBackends)) {
+                            finished.add(partId);
+                        } else {
+                            unfinished.add(partId);
                         }
                     }
-                    tableInfo.add(publishedReplicas + "/" + totalReplicas);
+                    tableInfo.add(finished.isEmpty() ? "" :
+                            finished.stream().map(String::valueOf).collect(Collectors.joining(",")));
+                    tableInfo.add(unfinished.isEmpty() ? "" :
+                            unfinished.stream().map(String::valueOf).collect(Collectors.joining(",")));
                 } else {
+                    tableInfo.add("");
                     tableInfo.add("");
                 }
 
-                // BlockedBy per table — filter by partitions of this table
+                // BlockedBy per table
                 if (transactionState.getTransactionStatus() == TransactionStatus.COMMITTED) {
-                    Set<Long> tableBlockedBy = Sets.newHashSet();
-                    for (PartitionCommitInfo partInfo : tableCommitInfo.getIdToPartitionCommitInfo().values()) {
-                        List<TransactionState> txns = partitionToTxns.get(partInfo.getPhysicalPartitionId());
-                        if (txns == null) {
-                            continue;
-                        }
-                        for (TransactionState txn : txns) {
-                            if (txn.getTransactionId() == transactionState.getTransactionId()) {
-                                continue;
-                            }
-                            TableCommitInfo otherTableInfo = txn.getIdToTableCommitInfos().get(tableId);
-                            if (otherTableInfo == null) {
-                                continue;
-                            }
-                            PartitionCommitInfo otherPartInfo =
-                                    otherTableInfo.getPartitionCommitInfo(partInfo.getPhysicalPartitionId());
-                            if (otherPartInfo != null && otherPartInfo.getVersion() < partInfo.getVersion()) {
-                                tableBlockedBy.add(txn.getTransactionId());
-                            }
-                        }
-                    }
-                    tableInfo.add(tableBlockedBy.isEmpty() ? "" :
-                            tableBlockedBy.stream().map(String::valueOf).collect(Collectors.joining(",")));
+                    tableInfo.add(getTableBlockedByTxns(transactionState, tableId, tableCommitInfo, partitionToTxns));
                 } else {
                     tableInfo.add("");
                 }
@@ -1909,6 +1869,77 @@ public class DatabaseTransactionMgr {
             readUnlock();
         }
         return tableInfos;
+    }
+
+    /**
+     * Check if a partition's publish is complete.
+     * Shared-nothing: all BE tasks that participate are finished.
+     * Shared-data: PartitionCommitInfo.versionTime > 0.
+     */
+    private boolean isPartitionPublished(TransactionState txnState, long partitionId,
+                                         Set<Long> finishedBackends) {
+        if (RunMode.isSharedDataMode()) {
+            // In shared-data mode, check versionTime from PartitionCommitInfo
+            for (TableCommitInfo tableInfo : txnState.getIdToTableCommitInfos().values()) {
+                PartitionCommitInfo partInfo = tableInfo.getPartitionCommitInfo(partitionId);
+                if (partInfo != null) {
+                    return partInfo.getVersionTime() > 0;
+                }
+            }
+            return false;
+        } else {
+            // In shared-nothing mode, all BE tasks must be finished
+            // (simplified: if all backends are finished, all partitions are finished)
+            Map<Long, PublishVersionTask> tasks = txnState.getPublishVersionTasks();
+            for (PublishVersionTask task : tasks.values()) {
+                if (!task.isFinished()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /**
+     * Compute BlockedBy for a specific table within a transaction.
+     */
+    private String getTableBlockedByTxns(TransactionState transactionState, long tableId,
+                                         TableCommitInfo tableCommitInfo,
+                                         @Nullable Map<Long, List<TransactionState>> partitionToTxns) {
+        if (RunMode.isSharedDataMode()) {
+            // In shared-data mode, use TransactionGraph (table-level dependency)
+            Set<Long> blockedBy = transactionGraph.getBlockedByTxnIds(transactionState.getTransactionId());
+            return blockedBy.isEmpty() ? "" :
+                    blockedBy.stream().map(String::valueOf).collect(Collectors.joining(","));
+        }
+
+        // In shared-nothing mode, filter by partitions of this table
+        Set<Long> tableBlockedBy = Sets.newHashSet();
+        if (partitionToTxns == null) {
+            return "";
+        }
+        for (PartitionCommitInfo partInfo : tableCommitInfo.getIdToPartitionCommitInfo().values()) {
+            List<TransactionState> txns = partitionToTxns.get(partInfo.getPhysicalPartitionId());
+            if (txns == null) {
+                continue;
+            }
+            for (TransactionState txn : txns) {
+                if (txn.getTransactionId() == transactionState.getTransactionId()) {
+                    continue;
+                }
+                TableCommitInfo otherTableInfo = txn.getIdToTableCommitInfos().get(tableId);
+                if (otherTableInfo == null) {
+                    continue;
+                }
+                PartitionCommitInfo otherPartInfo =
+                        otherTableInfo.getPartitionCommitInfo(partInfo.getPhysicalPartitionId());
+                if (otherPartInfo != null && otherPartInfo.getVersion() < partInfo.getVersion()) {
+                    tableBlockedBy.add(txn.getTransactionId());
+                }
+            }
+        }
+        return tableBlockedBy.isEmpty() ? "" :
+                tableBlockedBy.stream().map(String::valueOf).collect(Collectors.joining(","));
     }
 
     /**
@@ -1967,20 +1998,6 @@ public class DatabaseTransactionMgr {
                 throw new AnalysisException("Table[" + tableId + "] does not exist in transaction[" + txnId + "].");
             }
 
-            // Collect finished backends and error replicas
-            Map<Long, PublishVersionTask> publishTasks = transactionState.getPublishVersionTasks();
-            Set<Long> finishedBackends = Sets.newHashSet();
-            Set<Long> errorReplicaIds = Sets.newHashSet();
-            for (Map.Entry<Long, PublishVersionTask> entry : publishTasks.entrySet()) {
-                if (entry.getValue().isFinished()) {
-                    finishedBackends.add(entry.getKey());
-                    Set<Long> errReplicas = entry.getValue().getErrorReplicas();
-                    if (errReplicas != null) {
-                        errorReplicaIds.addAll(errReplicas);
-                    }
-                }
-            }
-
             long publishStartTime = transactionState.getPublishVersionTime() > 0
                     ? transactionState.getPublishVersionTime() : transactionState.getCommitTime();
 
@@ -1997,32 +2014,27 @@ public class DatabaseTransactionMgr {
 
                 // VisibleVersion
                 long visibleVersion = -1;
-                int totalReplicas = 0;
-                int publishedReplicas = 0;
                 if (table != null) {
                     PhysicalPartition partition = table.getPhysicalPartition(partitionId);
                     if (partition != null) {
                         visibleVersion = partition.getVisibleVersion();
-                        if (transactionState.getTransactionStatus() == TransactionStatus.COMMITTED) {
-                            List<MaterializedIndex> allIndices =
-                                    transactionState.getPartitionLoadedIndexes(tableId, partition);
-                            for (MaterializedIndex index : allIndices) {
-                                for (Tablet tablet : index.getTablets()) {
-                                    for (Replica replica : ((LocalTablet) tablet).getImmutableReplicas()) {
-                                        totalReplicas++;
-                                        if (isReplicaPublished(replica, partition, partitionCommitInfo,
-                                                finishedBackends, errorReplicaIds)) {
-                                            publishedReplicas++;
-                                        }
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
                 partitionInfo.add(visibleVersion);
-                partitionInfo.add(totalReplicas);
-                partitionInfo.add(publishedReplicas);
+
+                // FinishedBackends / UnfinishedBackends
+                if (transactionState.getTransactionStatus() == TransactionStatus.COMMITTED) {
+                    List<Long> finished = new ArrayList<>();
+                    List<Long> unfinished = new ArrayList<>();
+                    getPartitionPublishBackends(transactionState, partitionId, finished, unfinished);
+                    partitionInfo.add(finished.isEmpty() ? "" :
+                            finished.stream().map(String::valueOf).collect(Collectors.joining(",")));
+                    partitionInfo.add(unfinished.isEmpty() ? "" :
+                            unfinished.stream().map(String::valueOf).collect(Collectors.joining(",")));
+                } else {
+                    partitionInfo.add("");
+                    partitionInfo.add("");
+                }
 
                 // ElapsedTime
                 long elapsed = System.currentTimeMillis() - publishStartTime;
@@ -2036,7 +2048,48 @@ public class DatabaseTransactionMgr {
         return partitionInfos;
     }
 
+    /**
+     * Get finished/unfinished backends (or CNs) for a partition's publish.
+     * Shared-nothing: from PublishVersionTask per BE.
+     * Shared-data: from LakePublishStatus per CN per partition.
+     */
+    private void getPartitionPublishBackends(TransactionState txnState, long partitionId,
+                                             List<Long> finished, List<Long> unfinished) {
+        if (RunMode.isSharedDataMode()) {
+            Map<Long, Map<Long, LakePublishStatus>> lakeTasks = txnState.getLakePartitionPublishTasks();
+            Map<Long, LakePublishStatus> nodeStatusMap = lakeTasks.get(partitionId);
+            if (nodeStatusMap != null) {
+                for (Map.Entry<Long, LakePublishStatus> e : nodeStatusMap.entrySet()) {
+                    if (e.getValue().isFinished()) {
+                        finished.add(e.getKey());
+                    } else {
+                        unfinished.add(e.getKey());
+                    }
+                }
+            }
+        } else {
+            // Shared-nothing: PublishVersionTask is per-BE for the whole txn
+            Map<Long, PublishVersionTask> tasks = txnState.getPublishVersionTasks();
+            for (Map.Entry<Long, PublishVersionTask> e : tasks.entrySet()) {
+                if (e.getValue().isFinished()) {
+                    finished.add(e.getKey());
+                } else {
+                    unfinished.add(e.getKey());
+                }
+            }
+        }
+    }
+
     protected List<List<Comparable>> getTabletTransInfo(long txnId, long tableId, long partitionId)
+            throws AnalysisException {
+        if (RunMode.isSharedDataMode()) {
+            return getTabletTransInfoForLake(txnId, tableId, partitionId);
+        } else {
+            return getTabletTransInfoForLocal(txnId, tableId, partitionId);
+        }
+    }
+
+    private List<List<Comparable>> getTabletTransInfoForLocal(long txnId, long tableId, long partitionId)
             throws AnalysisException {
         List<List<Comparable>> tabletInfos = new ArrayList<>();
         readLock();
@@ -2074,7 +2127,6 @@ public class DatabaseTransactionMgr {
                 throw new AnalysisException("Partition[" + partitionId + "] does not exist.");
             }
 
-            // Get commit info for this partition to determine publish status
             TableCommitInfo tableCommitInfo = transactionState.getIdToTableCommitInfos().get(tableId);
             if (tableCommitInfo == null) {
                 throw new AnalysisException("Table[" + tableId + "] does not exist in transaction[" + txnId + "].");
@@ -2093,7 +2145,6 @@ public class DatabaseTransactionMgr {
                         List<Comparable> row = new ArrayList<>();
                         row.add(tabletId);
                         row.add(replica.getBackendId());
-                        // PublishStatus
                         if (isReplicaPublished(replica, partition, partitionCommitInfo,
                                 finishedBackends, errorReplicaIds)) {
                             row.add("PUBLISHED");
@@ -2102,9 +2153,90 @@ public class DatabaseTransactionMgr {
                         } else {
                             row.add("PENDING");
                         }
+                        // ErrorMsg — empty for shared-nothing for now
+                        row.add("");
                         row.add(elapsedStr);
                         tabletInfos.add(row);
                     }
+                }
+            }
+        } finally {
+            readUnlock();
+        }
+        return tabletInfos;
+    }
+
+    private List<List<Comparable>> getTabletTransInfoForLake(long txnId, long tableId, long partitionId)
+            throws AnalysisException {
+        List<List<Comparable>> tabletInfos = new ArrayList<>();
+        readLock();
+        try {
+            TransactionState transactionState = unprotectedGetTransactionState(txnId);
+            if (null == transactionState) {
+                throw new AnalysisException("Transaction[" + txnId + "] does not exist.");
+            }
+
+            long publishStartTime = transactionState.getPublishVersionTime() > 0
+                    ? transactionState.getPublishVersionTime() : transactionState.getCommitTime();
+            String elapsedStr = (System.currentTimeMillis() - publishStartTime) / 1000 + "s";
+
+            // Get lake publish status for this partition
+            Map<Long, Map<Long, LakePublishStatus>> lakeTasks = transactionState.getLakePartitionPublishTasks();
+            Map<Long, LakePublishStatus> nodeStatusMap = lakeTasks.get(partitionId);
+
+            // Build tablet->nodeId mapping from LakePublishStatus
+            Map<Long, Long> tabletToNode = new HashMap<>();
+            Map<Long, LakePublishStatus> tabletToStatus = new HashMap<>();
+            if (nodeStatusMap != null) {
+                for (Map.Entry<Long, LakePublishStatus> e : nodeStatusMap.entrySet()) {
+                    long nodeId = e.getKey();
+                    LakePublishStatus status = e.getValue();
+                    if (status.getTabletIds() != null) {
+                        for (Long tid : status.getTabletIds()) {
+                            tabletToNode.put(tid, nodeId);
+                            tabletToStatus.put(tid, status);
+                        }
+                    }
+                }
+            }
+
+            OlapTable table = (OlapTable) globalStateMgr.getLocalMetastore()
+                    .getTable(transactionState.getDbId(), tableId);
+            if (table == null) {
+                throw new AnalysisException("Table[" + tableId + "] does not exist.");
+            }
+            PhysicalPartition partition = table.getPhysicalPartition(partitionId);
+            if (partition == null) {
+                throw new AnalysisException("Partition[" + partitionId + "] does not exist.");
+            }
+
+            List<MaterializedIndex> allIndices = transactionState.getPartitionLoadedIndexes(tableId, partition);
+            for (MaterializedIndex index : allIndices) {
+                for (Tablet tablet : index.getTablets()) {
+                    long tabletId = tablet.getId();
+                    List<Comparable> row = new ArrayList<>();
+                    row.add(tabletId);
+                    // NodeId
+                    Long nodeId = tabletToNode.get(tabletId);
+                    row.add(nodeId != null ? nodeId : -1L);
+                    // PublishStatus
+                    LakePublishStatus status = tabletToStatus.get(tabletId);
+                    if (status != null) {
+                        if (status.isFinished()) {
+                            row.add("PUBLISHED");
+                        } else if (status.isFailed()) {
+                            row.add("FAILED");
+                        } else {
+                            row.add("PENDING");
+                        }
+                        // ErrorMsg
+                        row.add(status.isFailed() && status.getErrorMsg() != null ? status.getErrorMsg() : "");
+                    } else {
+                        row.add("UNKNOWN");
+                        row.add("");
+                    }
+                    row.add(elapsedStr);
+                    tabletInfos.add(row);
                 }
             }
         } finally {
