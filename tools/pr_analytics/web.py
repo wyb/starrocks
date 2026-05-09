@@ -297,6 +297,14 @@ def attach_versions(results: list) -> list:
     return results
 
 
+def resolve_backport_pr(pr_number: int) -> int | None:
+    """If pr_number is a backport PR, return the main PR number. Otherwise return None."""
+    rows = sr_query(f"SELECT pr_number FROM pr_versions WHERE backport_pr = {pr_number} LIMIT 1;")
+    if rows:
+        return int(rows[0]["pr_number"])
+    return None
+
+
 def get_pr_detail(pr_number: int) -> dict | None:
     rows = sr_query(f"""
 SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
@@ -308,10 +316,23 @@ WHERE d.pr_number = {pr_number}
 LIMIT 1;
 """)
     if not rows:
-        return None
+        # Try resolving as a backport PR
+        main_pr = resolve_backport_pr(pr_number)
+        if main_pr:
+            rows = sr_query(f"""
+SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
+       d.ai_summary, d.ai_summary_en, d.diff_keywords, d.searchable_text,
+       d.body, d.merged_at, d.additions,
+       d.deletions, d.changed_files
+FROM pr_data d
+WHERE d.pr_number = {main_pr}
+LIMIT 1;
+""")
+        if not rows:
+            return None
 
     result = attach_versions(rows)[0]
-    result["github_url"] = f"https://github.com/{REPO}/pull/{pr_number}"
+    result["github_url"] = f"https://github.com/{REPO}/pull/{result['pr_number']}"
     return result
 
 
@@ -785,9 +806,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not pr_number:
             return ""
         try:
-            return str(int(pr_number))
+            pn = int(pr_number)
         except (TypeError, ValueError):
             raise ValueError("pr_number must be an integer")
+        # If the number is a backport PR, resolve to the main PR
+        main_pr = resolve_backport_pr(pn)
+        if main_pr:
+            return str(main_pr)
+        return str(pn)
 
     def _search_filters(self, params):
         filters = {k: params.get(k, "") for k in
@@ -868,6 +894,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not result:
                 self._json({"error": "pr not found"}, 404)
                 return
+            # Indicate if the queried number was a backport PR
+            if int(result["pr_number"]) != pr_number:
+                result["resolved_from_backport_pr"] = pr_number
             self._json({"result": result})
         except Exception as e:
             self._json({"error": str(e)}, 500)
