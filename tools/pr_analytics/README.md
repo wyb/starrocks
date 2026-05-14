@@ -155,6 +155,8 @@ python3 web.py --host 127.0.0.1 --port 9090
   - `MATCH ALL` / `MATCH ANY`：使用 StarRocks 倒排索引分词匹配 `searchable_text`。
 - **筛选条件**：PR# / Module / Type / Version / Author / 时间范围
 - 每个 PR 展示所有关联版本（含 backport），版本号可点击跳转对应 PR
+- 指定 PR# 过滤时，如果输入的是 backport PR 号，会自动反查并返回主 PR
+- **AI 分析抽屉**（右上角 “✨ AI 分析” 按钮）：基于 codex CLI 调用 `pr-fix-finder` skill，流式输出分析过程和结论，支持多轮追问。详见下方"AI 分析抽屉"章节。
 
 ### 8. 定时运行（守护进程）
 
@@ -187,11 +189,28 @@ tail -f daemon.log
 | `GET /api/analyze?query=...` | 先召回 Top 5 相关 PR，再调用 Ollama 输出修复分析，返回 `{"analysis": "...", "results": [...]}` |
 | `GET /api/agent/search?query=...` | 面向 agent 的语义搜索接口，返回格式同 `/api/search` |
 | `GET /api/agent/filter?keyword=...` | 面向 agent 的关键词接口，返回格式同 `/api/filter` |
-| `GET /api/agent/pr/<number>` | 查询单个 PR 详情，返回 `body`、`versions`、`github_url` 等字段 |
+| `GET /api/agent/pr/<number>` | 查询单个 PR 详情，返回 `body`、`versions`、`github_url` 等字段；输入 backport PR 号会自动反查主 PR（响应附 `resolved_from_backport_pr`） |
+| `GET /api/ai/start?prompt=...` | SSE 流，启动新 codex 会话调用 `pr-fix-finder` 分析问题 |
+| `GET /api/ai/chat?session=<id>&prompt=...` | SSE 流，使用 session id 续会话进行追问 |
 
 `/api/agent/search` 和 `/api/agent/filter` 额外兼容 `q` / `query` / `keyword` 等参数别名，便于不同 agent 工作流接入。
 
-### 10. 配套 Skill
+### 10. AI 分析抽屉
+
+页面右上角 “✨ AI 分析” 按钮打开右侧抽屉，专门做基于 LLM 的修复匹配：
+
+- 触发后自动把搜索框 query 预填到 AI 输入框，可改后发送（也可直接在抽屉里描述新问题）
+- 后端调用 `codex exec --json` 跑 `pr-fix-finder` skill，通过 SSE 把事件实时推到前端：`session` / `message` / `tool` / `tool_output` / `error` / `done`
+- 中间的 "thinking" 消息会被自动折叠成浅灰小条，只突出最后一条结构化结论
+- 助手消息走 marked.js 做 markdown 渲染（代码块、列表、链接、表格等）
+- "+ 新对话" 按钮清空会话和消息，下一条走 `/api/ai/start`；否则用 `/api/ai/chat` 续会话
+- `Cmd/Ctrl + Enter` 在输入框发送
+- 会话仅在服务进程内存里维护，重启即丢；多浏览器标签互不干扰
+- 子进程清理：关页面 / 关 EventSource 时，后端会捕获 `BrokenPipeError` 并 `terminate()` 对应的 codex 进程，不会留僵尸
+
+实现：`web.py` 内联前端 + 路由，`chat.py` 封装 codex 子进程和 JSONL 事件解析。`http.server.ThreadingHTTPServer` 保证 SSE 长连接不阻塞其他请求。
+
+### 11. 配套 Skill
 
 目录内新增了 [`skills/pr-fix-finder/SKILL.md`](./skills/pr-fix-finder/SKILL.md)，用于回答“某个 StarRocks 问题是否已被历史 PR 修复”。它依赖上面的 `/api/agent/search`、`/api/agent/filter`、`/api/agent/pr/<number>` 接口做多轮召回和证据补全。
 
