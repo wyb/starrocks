@@ -18,6 +18,7 @@ import os
 import urllib.parse
 from pathlib import Path
 import pymysql
+import chat
 
 # --- Logging Setup ---
 LOG_DIR = Path(__file__).parent / "log"
@@ -454,6 +455,114 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
          border-radius: 8px; margin: 12px 0; }
 .analysis-box { background: #fff8e1; border-left: 4px solid #ffc107; padding: 16px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
 .analysis-title { font-weight: bold; margin-bottom: 8px; color: #b06000; display: flex; align-items: center; gap: 8px; }
+
+.search-row button.ai-btn { padding: 10px 16px; background: #0288d1; color: #fff;
+          border: none; border-radius: 8px; cursor: pointer; font-size: 14px; white-space: nowrap; }
+.search-row button.ai-btn:hover { background: #0277bd; }
+
+.ai-drawer { position: fixed; right: 0; top: 0; bottom: 0; width: 620px; max-width: 50vw;
+             background: #fff; box-shadow: -2px 0 12px rgba(0,0,0,0.15);
+             transform: translateX(100%); transition: transform 0.3s ease;
+             display: flex; flex-direction: column; z-index: 100; }
+.ai-drawer.open { transform: translateX(0); }
+.ai-drawer.maximized { width: 100vw; max-width: 100vw; }
+.ai-header { padding: 12px 16px; background: #1a73e8; color: #fff;
+             display: flex; justify-content: space-between; align-items: center; }
+.ai-actions { display: flex; gap: 8px; align-items: center; }
+.ai-header-btn { background: rgba(255,255,255,0.18); color: #fff; border: 1px solid rgba(255,255,255,0.35);
+                 border-radius: 6px; padding: 4px 12px; font-size: 12px;
+                 cursor: pointer; line-height: 1.4; }
+.ai-header-btn:hover { background: rgba(255,255,255,0.32); }
+.ai-header-close { padding: 2px 10px; font-size: 16px; line-height: 1; }
+.ai-messages { flex: 1; overflow-y: auto; padding: 12px; background: #fafafa; }
+.ai-msg { margin-bottom: 4px; padding: 8px 12px; border-radius: 8px;
+          font-size: 13px; line-height: 1.5; white-space: pre-wrap;
+          word-break: break-word; }
+.ai-msg.user { background: #e8f0fe; color: #1a73e8; }
+.ai-msg.assistant { background: #f5f9ff; border: 1px solid #d6e4f5; white-space: normal;
+                     font-size: 15px; color: #333; line-height: 1.55; }
+.ai-msg.tool { background: #fef7e0; border-left: 3px solid #f9ab00; font-family: SFMono-Regular, Menlo, monospace;
+               font-size: 12px; color: #666; }
+.ai-msg.tool details summary { cursor: pointer; outline: none; }
+.ai-msg.tool pre { font-size: 11px; margin-top: 4px; white-space: pre-wrap; }
+.ai-msg.tool-output { background: #e6f4ea; border-left: 3px solid #34a853; color: #1e6f3f;
+                      font-family: SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.ai-msg.error { background: #fce8e6; color: #c5221f; }
+.ai-msg.thinking { background: #f1f3f4; color: #888; font-style: italic;
+                   display: flex; align-items: center; gap: 8px; }
+.ai-msg.thinking::before { content: ''; width: 8px; height: 8px; border-radius: 50%;
+                            background: #1a73e8; animation: ai-pulse 1.2s ease-in-out infinite; }
+@keyframes ai-pulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); }
+                       50% { opacity: 1; transform: scale(1.2); } }
+.ai-input { border-top: 1px solid #eee; padding: 10px; display: flex; gap: 8px;
+            background: #fff; }
+.ai-input textarea { flex: 1; resize: none; padding: 8px;
+                     border: 1px solid #ddd; border-radius: 6px;
+                     font-size: 14px; line-height: 1.5; font-family: inherit; outline: none;
+                     min-height: 60px; max-height: 240px; overflow-y: auto; }
+.ai-input textarea:focus { border-color: #1a73e8; }
+.ai-input button { padding: 0 18px; background: #1a73e8; color: #fff;
+                   border: none; border-radius: 6px; cursor: pointer; }
+.ai-input button:hover { background: #1557b0; }
+.ai-input button:disabled { background: #aaa; cursor: not-allowed; }
+.ai-input button.stop { background: #d93025; }
+.ai-input button.stop:hover { background: #b8261b; }
+
+.ai-msg.assistant { padding: 10px 14px; position: relative; }
+.ai-copy-btn { position: absolute; top: 6px; right: 6px; padding: 2px 8px;
+               background: rgba(255,255,255,0.85); border: 1px solid #d6e4f5;
+               border-radius: 4px; font-size: 11px; color: #1a73e8; cursor: pointer;
+               opacity: 0; transition: opacity 0.15s; }
+.ai-msg.assistant:hover .ai-copy-btn { opacity: 1; }
+.ai-copy-btn:hover { background: #e8f0fe; }
+.ai-copy-btn.copied { color: #34a853; border-color: #c8e6c9; }
+.ai-msg.assistant.thinking-bubble { background: #fafafa; border: 1px dashed #ddd;
+                                     padding: 4px 10px; font-size: 11px; color: #888;
+                                     font-style: italic; }
+.ai-msg.assistant.thinking-bubble p,
+.ai-msg.assistant.thinking-bubble ul,
+.ai-msg.assistant.thinking-bubble ol { margin: 2px 0 !important; line-height: 1.4; }
+.ai-msg.assistant p,
+.ai-msg.assistant ul,
+.ai-msg.assistant ol,
+.ai-msg.assistant pre,
+.ai-msg.assistant blockquote,
+.ai-msg.assistant table { margin: 6px 0 !important; line-height: 1.55; }
+.ai-msg.assistant h1, .ai-msg.assistant h2, .ai-msg.assistant h3,
+.ai-msg.assistant h4 { margin: 12px 0 4px !important; line-height: 1.3; }
+.ai-msg.assistant > *:first-child { margin-top: 0 !important; }
+.ai-msg.assistant > *:last-child { margin-bottom: 0 !important; }
+.ai-msg.assistant p:empty { display: none; }
+.ai-msg.assistant li { margin: 2px 0; line-height: 1.55; }
+.ai-msg.assistant li > p,
+.ai-msg.assistant li > ul,
+.ai-msg.assistant li > ol { margin: 0 !important; }
+.ai-msg.assistant li p { margin: 0 !important; display: inline; }
+.ai-msg.assistant h1 { font-size: 18px; font-weight: 600; }
+.ai-msg.assistant h2 { font-size: 16px; font-weight: 600; }
+.ai-msg.assistant h3 { font-size: 14px; font-weight: 600; }
+.ai-msg.assistant h4 { font-size: 13px; font-weight: 600; color: #555; }
+.ai-msg.assistant ul, .ai-msg.assistant ol { padding-left: 22px; }
+.ai-msg.assistant code { background: #f4f5f7; padding: 1px 5px;
+                          border-radius: 3px; font-family: SFMono-Regular, Menlo, monospace;
+                          font-size: 12px; color: #d6336c; }
+.ai-msg.assistant pre { background: #282c34; color: #e6e6e6;
+                         padding: 10px 12px; border-radius: 6px;
+                         overflow-x: auto; margin: 8px 0; }
+.ai-msg.assistant pre code { background: transparent; color: inherit;
+                              padding: 0; font-size: 12px; line-height: 1.5; }
+.ai-msg.assistant blockquote { border-left: 3px solid #1a73e8;
+                                margin: 8px 0; padding: 4px 10px;
+                                color: #555; background: #f8fafe; }
+.ai-msg.assistant a { color: #1a73e8; text-decoration: none; }
+.ai-msg.assistant a:hover { text-decoration: underline; }
+.ai-msg.assistant table { border-collapse: collapse; margin: 8px 0;
+                           font-size: 12px; width: 100%; }
+.ai-msg.assistant th, .ai-msg.assistant td { border: 1px solid #ddd;
+                                               padding: 4px 8px; text-align: left; }
+.ai-msg.assistant th { background: #f4f5f7; font-weight: 600; }
+.ai-msg.assistant hr { border: none; border-top: 1px solid #e0e0e0; margin: 12px 0; }
+.ai-msg.assistant strong { font-weight: 600; }
 </style>
 </head>
 <body>
@@ -466,7 +575,8 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
             <input type="text" id="query" placeholder="搜索描述或关键词...">
             <button onclick="doSearch()">语义搜索</button>
             <button class="secondary" onclick="doFilter()">关键词过滤</button>
-            <div class="toggle-filters" id="toggle_btn" onclick="toggleFilters()">展开筛选<i></i></div>
+            <button class="ai-btn" onclick="openAiDrawer()">✨ AI 分析</button>
+            <div class="toggle-filters" id="toggle_btn" onclick="toggleFilters()"><i></i></div>
         </div>
 
         <div class="filter-container collapsed" id="filter_container">
@@ -524,8 +634,43 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
     </div>
 </div>
 
+<div id="ai_drawer" class="ai-drawer">
+  <div class="ai-header">
+    <span>AI 分析 (pr-fix-finder)</span>
+    <span class="ai-actions">
+      <button class="ai-header-btn" onclick="resetAiSession()">+ 新对话</button>
+      <button id="ai_max_btn" class="ai-header-btn ai-header-close" onclick="toggleAiMaximize()" title="最大化">⛶</button>
+      <button class="ai-header-btn ai-header-close" onclick="closeAiDrawer()" title="最小化">−</button>
+    </span>
+  </div>
+  <div id="ai_messages" class="ai-messages"></div>
+  <div class="ai-input">
+    <textarea id="ai_input" rows="3" placeholder="描述问题或追问..."></textarea>
+    <button id="ai_send" onclick="aiPrimaryClick()">发送</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <script>
 const REPO = '__REPO__';
+if (typeof marked !== 'undefined') {
+    marked.setOptions({ breaks: false, gfm: true });
+}
+function aiRenderMarkdown(text) {
+    if (typeof marked === 'undefined') return escHtml(text);
+    let normalized = (text || '')
+        .replace(/\\r\\n/g, '\\n')
+        .split('\\n').map(l => l.replace(/\\s+$/, '')).join('\\n')
+        .replace(/\\n{3,}/g, '\\n\\n')
+        .trim();
+    // Force tight lists: drop blank lines between consecutive list markers
+    normalized = normalized.replace(/(^[ \\t]*[-*+] [^\\n]*)\\n\\n(?=[ \\t]*[-*+] )/gm, '$1\\n');
+    normalized = normalized.replace(/(^[ \\t]*\\d+\\. [^\\n]*)\\n\\n(?=[ \\t]*\\d+\\. )/gm, '$1\\n');
+    let html;
+    try { html = marked.parse(normalized); } catch { return escHtml(normalized); }
+    html = html.replace(/(<br\\s*\\/?>\\s*){2,}/gi, '<br>');
+    return html;
+}
 
 async function api(path, params) {
     const qs = new URLSearchParams(params).toString();
@@ -542,7 +687,7 @@ function toggleFilters() {
     const btn = document.getElementById('toggle_btn');
     const isCollapsed = container.classList.toggle('collapsed');
     btn.classList.toggle('active', !isCollapsed);
-    btn.innerHTML = (isCollapsed ? '展开筛选' : '收起筛选') + '<i></i>';
+    btn.innerHTML = '<i></i>';
 }
 
 function setMatchMode(val) {
@@ -727,6 +872,210 @@ function escHtml(s) {
     return d.innerHTML;
 }
 
+let aiSessionId = null;
+let aiCurrentAssistantEl = null;
+let aiThinkingEl = null;
+let aiThinkingTimer = null;
+let aiSendStartedAt = 0;
+let aiCurrentEs = null;
+let aiSending = false;
+
+function openAiDrawer() {
+    document.getElementById('ai_drawer').classList.add('open');
+    const q = document.getElementById('query').value.trim();
+    const input = document.getElementById('ai_input');
+    if (q && !input.value) input.value = q;
+    input.dispatchEvent(new Event('input'));
+    input.focus();
+}
+
+function closeAiDrawer() {
+    document.getElementById('ai_drawer').classList.remove('open');
+}
+
+function toggleAiMaximize() {
+    const drawer = document.getElementById('ai_drawer');
+    const btn = document.getElementById('ai_max_btn');
+    const maxed = drawer.classList.toggle('maximized');
+    if (btn) {
+        btn.textContent = maxed ? '⧉' : '⛶';
+        btn.title = maxed ? '还原' : '最大化';
+    }
+}
+
+function resetAiSession() {
+    aiSessionId = null;
+    aiCurrentAssistantEl = null;
+    document.getElementById('ai_messages').innerHTML = '';
+}
+
+function aiCopyMsg(btn) {
+    const raw = btn.parentElement && btn.parentElement.dataset.raw;
+    if (!raw) return;
+    const restore = () => { btn.classList.remove('copied'); btn.textContent = '复制'; };
+    const ok = () => { btn.classList.add('copied'); btn.textContent = '已复制'; setTimeout(restore, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(raw).then(ok).catch(() => {});
+    } else {
+        const ta = document.createElement('textarea');
+        ta.value = raw; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); ok(); } catch {}
+        document.body.removeChild(ta);
+    }
+}
+
+function aiAppendMsg(role, text) {
+    const div = document.createElement('div');
+    div.className = 'ai-msg ' + role;
+    div.textContent = text;
+    const list = document.getElementById('ai_messages');
+    list.appendChild(div);
+    list.scrollTop = list.scrollHeight;
+    return div;
+}
+
+function aiAppendToolMsg(ev) {
+    const div = document.createElement('div');
+    div.className = 'ai-msg tool';
+    const argsStr = typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args, null, 2);
+    div.innerHTML = '<details><summary>🔧 ' + escHtml(ev.name || 'tool') + '</summary><pre>' + escHtml(argsStr || '') + '</pre></details>';
+    const list = document.getElementById('ai_messages');
+    list.appendChild(div);
+    list.scrollTop = list.scrollHeight;
+}
+
+function aiSetSending(sending) {
+    aiSending = sending;
+    const btn = document.getElementById('ai_send');
+    btn.disabled = false;
+    btn.textContent = sending ? '停止' : '发送';
+    btn.classList.toggle('stop', sending);
+}
+
+function aiPrimaryClick() {
+    if (aiSending) aiStop(); else sendAi();
+}
+
+function aiStop() {
+    if (aiCurrentEs) { try { aiCurrentEs.close(); } catch {} aiCurrentEs = null; }
+    aiClearThinking();
+    aiAppendMsg('error', '已停止');
+    aiSetSending(false);
+}
+
+function aiClearThinking() {
+    if (aiThinkingTimer) { clearInterval(aiThinkingTimer); aiThinkingTimer = null; }
+    if (aiThinkingEl) { aiThinkingEl.remove(); aiThinkingEl = null; }
+}
+
+function aiSetThinking(text) {
+    if (!aiThinkingEl) aiThinkingEl = aiAppendMsg('thinking', text);
+    aiThinkingEl.dataset.base = text;
+    aiRenderThinking();
+    if (!aiThinkingTimer) aiThinkingTimer = setInterval(aiRenderThinking, 1000);
+}
+
+function aiRenderThinking() {
+    if (!aiThinkingEl) return;
+    const elapsed = Math.floor((Date.now() - aiSendStartedAt) / 1000);
+    aiThinkingEl.textContent = (aiThinkingEl.dataset.base || '') + ' · ' + elapsed + 's';
+}
+
+function sendAi() {
+    const input = document.getElementById('ai_input');
+    const prompt = input.value.trim();
+    if (!prompt) return;
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+    aiAppendMsg('user', prompt);
+    aiCurrentAssistantEl = null;
+    aiClearThinking();
+    aiSendStartedAt = Date.now();
+    aiSetThinking('AI 正在思考...');
+    aiSetSending(true);
+
+    const url = aiSessionId
+        ? '/api/ai/chat?session=' + encodeURIComponent(aiSessionId) + '&prompt=' + encodeURIComponent(prompt)
+        : '/api/ai/start?prompt=' + encodeURIComponent(prompt);
+
+    const es = new EventSource(url);
+    aiCurrentEs = es;
+
+    es.onmessage = e => {
+        let ev;
+        try { ev = JSON.parse(e.data); } catch { return; }
+        switch (ev.type) {
+            case 'session':
+                aiSessionId = ev.session_id;
+                break;
+            case 'message': {
+                aiClearThinking();
+                if (!aiCurrentAssistantEl) {
+                    document.querySelectorAll('.ai-msg.assistant').forEach(el => el.classList.add('thinking-bubble'));
+                    aiCurrentAssistantEl = aiAppendMsg('assistant', '');
+                    aiCurrentAssistantEl.dataset.raw = '';
+                    aiCurrentAssistantEl.innerHTML = '<button class="ai-copy-btn" onclick="aiCopyMsg(this)">复制</button><div class="ai-content"></div>';
+                }
+                aiCurrentAssistantEl.dataset.raw = (aiCurrentAssistantEl.dataset.raw || '') + (ev.text || '');
+                const content = aiCurrentAssistantEl.querySelector('.ai-content');
+                content.innerHTML = aiRenderMarkdown(aiCurrentAssistantEl.dataset.raw);
+                content.querySelectorAll('p').forEach(p => {
+                    if (!p.textContent.trim() && !p.querySelector('img, code, a')) p.remove();
+                });
+                document.getElementById('ai_messages').scrollTop = 99999;
+                break;
+            }
+            case 'tool':
+                if (aiThinkingEl) aiSetThinking('正在调用工具...');
+                aiAppendToolMsg(ev);
+                aiCurrentAssistantEl = null;
+                break;
+            case 'tool_output':
+                aiClearThinking();
+                aiAppendMsg('tool-output', '↳ ' + (ev.text || '').slice(0, 500));
+                aiCurrentAssistantEl = null;
+                aiSetThinking('处理工具输出...');
+                break;
+            case 'error':
+                aiClearThinking();
+                aiAppendMsg('error', ev.text || 'unknown error');
+                break;
+            case 'done':
+                aiClearThinking();
+                es.close();
+                aiCurrentEs = null;
+                aiSetSending(false);
+                break;
+        }
+    };
+    es.onerror = () => {
+        if (aiCurrentEs !== es) return;
+        aiClearThinking();
+        aiAppendMsg('error', '连接中断');
+        es.close();
+        aiCurrentEs = null;
+        aiSetSending(false);
+    };
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const inp = document.getElementById('ai_input');
+    if (inp) {
+        inp.addEventListener('keydown', e => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault();
+                sendAi();
+            }
+        });
+        const autoResize = () => {
+            inp.style.height = 'auto';
+            inp.style.height = Math.min(inp.scrollHeight, 240) + 'px';
+        };
+        inp.addEventListener('input', autoResize);
+        autoResize();
+    }
+});
+
 // Init: load stats and filter options
 async function init() {
     try {
@@ -787,6 +1136,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_filter(params)
         elif path == "/api/stats":
             self._handle_stats()
+        elif path == "/api/ai/start":
+            self._handle_ai_start(params)
+        elif path == "/api/ai/chat":
+            self._handle_chat(params)
         elif path == "/api/options":
             self._handle_options()
         else:
@@ -921,6 +1274,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _sse_stream(self, iterator):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        try:
+            for event in iterator:
+                payload = json.dumps(event, ensure_ascii=False, default=str)
+                self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            logger.info("SSE client disconnected")
+            iterator.close()
+
+    def _handle_ai_start(self, params):
+        prompt = params.get("prompt", "").strip()
+        if not prompt:
+            self._json({"error": "prompt required"}, 400)
+            return
+        self._sse_stream(chat.start_session(prompt))
+
+    def _handle_chat(self, params):
+        session = params.get("session", "").strip()
+        prompt = params.get("prompt", "").strip()
+        if not session or not prompt:
+            self._json({"error": "session and prompt required"}, 400)
+            return
+        self._sse_stream(chat.resume_session(session, prompt))
+
     def _html(self, content):
         body = content.encode("utf-8")
         self.send_response(200)
@@ -939,7 +1323,7 @@ def main():
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     args = parser.parse_args()
 
-    server = http.server.HTTPServer((args.host, args.port), Handler)
+    server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
     logger.info(f"PR Analytics Web UI running at http://localhost:{args.port}")
     logger.info(f"  StarRocks: {SR_HOST}:{SR_PORT}")
     logger.info(f"  Ollama:    {OLLAMA_HOST}:{OLLAMA_PORT}")
