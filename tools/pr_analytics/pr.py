@@ -877,6 +877,7 @@ def load_versions(version_rows: list):
     auth = base64.b64encode(f"{SR_USER}:{SR_PASSWORD}".encode()).decode()
     cmd = [
         "curl", "-s", "-L", "--location-trusted",
+        "--noproxy", "*",
         "-X", "PUT",
         "-H", f"Authorization: Basic {auth}",
         "-H", "Content-Type: application/json",
@@ -1071,6 +1072,7 @@ def load_to_starrocks(rows: list[dict]):
     # Use curl with -L to follow 307 redirect from FE to BE
     cmd = [
         "curl", "-s", "-L", "--location-trusted",
+        "--noproxy", "*",
         "-X", "PUT",
         "-H", f"Authorization: Basic {auth}",
         "-H", "Content-Type: application/json",
