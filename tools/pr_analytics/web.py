@@ -1292,14 +1292,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_ai_start(self, params):
         prompt = params.get("prompt", "").strip()
+        self.log_message("[chat] start prompt_len=%d prompt=%r", len(prompt), prompt)
         if not prompt:
             self._json({"error": "prompt required"}, 400)
             return
-        self._sse_stream(chat.start_session(prompt))
+
+        def _tap():
+            for ev in chat.start_session(prompt):
+                if ev.get("type") == "session":
+                    self.log_message("[chat] start session=%s", ev.get("session_id"))
+                yield ev
+        self._sse_stream(_tap())
 
     def _handle_chat(self, params):
         session = params.get("session", "").strip()
         prompt = params.get("prompt", "").strip()
+        self.log_message("[chat] resume session=%s prompt_len=%d prompt=%r", session, len(prompt), prompt)
         if not session or not prompt:
             self._json({"error": "session and prompt required"}, 400)
             return
