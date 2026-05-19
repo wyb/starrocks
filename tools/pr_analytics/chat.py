@@ -129,7 +129,7 @@ def _run_codex(cmd: list[str], register_session: bool) -> Iterator[dict]:
             proc.terminate()
 
 
-def start_session(prompt: str) -> Iterator[dict]:
+def start_session(prompt: str, images: list[str] | None = None) -> Iterator[dict]:
     """首轮：起新 codex 会话调用 pr-fix-finder skill。"""
     cmd = [CODEX_BIN, "exec",
            "--sandbox", "workspace-write",
@@ -137,11 +137,13 @@ def start_session(prompt: str) -> Iterator[dict]:
            "--json", "-C", REPO_ROOT]
     if CODEX_MODEL:
         cmd.extend(["--model", CODEX_MODEL])
+    for img in (images or []):
+        cmd.append(f"--image={img}")
     cmd.append(f"用 pr-fix-finder 分析: {prompt}")
     yield from _run_codex(cmd, register_session=True)
 
 
-def resume_session(session_id: str, prompt: str) -> Iterator[dict]:
+def resume_session(session_id: str, prompt: str, images: list[str] | None = None) -> Iterator[dict]:
     """续会话。session_id 必须先存在于 SESSIONS。"""
     if session_id not in SESSIONS:
         yield {"type": "error", "text": f"session {session_id} not found"}
@@ -152,6 +154,8 @@ def resume_session(session_id: str, prompt: str) -> Iterator[dict]:
            "--json"]
     if CODEX_MODEL:
         cmd.extend(["--model", CODEX_MODEL])
+    for img in (images or []):
+        cmd.append(f"--image={img}")
     cmd.append(prompt)
     SESSIONS[session_id]["prompt_count"] += 1
     yield from _run_codex(cmd, register_session=False)
