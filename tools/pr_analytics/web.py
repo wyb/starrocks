@@ -15,7 +15,10 @@ import http.server
 import json
 import logging
 import os
+import re
+import tempfile
 import urllib.parse
+import uuid
 from pathlib import Path
 import pymysql
 import chat
@@ -47,6 +50,22 @@ OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 
 REPO = "StarRocks/starrocks"
+
+IMG_DIR = Path(tempfile.gettempdir()) / "pr_analytics_imgs"
+IMG_DIR.mkdir(exist_ok=True)
+MAX_IMG_BYTES = 10 * 1024 * 1024  # 10MB
+
+
+def _detect_image_ext(b: bytes) -> str | None:
+    if b.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if b.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if b.startswith(b"GIF87a") or b.startswith(b"GIF89a"):
+        return "gif"
+    if len(b) >= 12 and b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "webp"
+    return None
 
 
 # --- Backend helpers ---
@@ -494,8 +513,9 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
                             background: #1a73e8; animation: ai-pulse 1.2s ease-in-out infinite; }
 @keyframes ai-pulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); }
                        50% { opacity: 1; transform: scale(1.2); } }
-.ai-input { border-top: 1px solid #eee; padding: 10px; display: flex; gap: 8px;
-            background: #fff; }
+.ai-input { border-top: 1px solid #eee; padding: 10px; display: flex; flex-direction: column;
+            gap: 6px; background: #fff; }
+.ai-input-row { display: flex; gap: 8px; align-items: stretch; }
 .ai-input textarea { flex: 1; resize: none; padding: 8px;
                      border: 1px solid #ddd; border-radius: 6px;
                      font-size: 14px; line-height: 1.5; font-family: inherit; outline: none;
@@ -507,6 +527,27 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 .ai-input button:disabled { background: #aaa; cursor: not-allowed; }
 .ai-input button.stop { background: #d93025; }
 .ai-input button.stop:hover { background: #b8261b; }
+.ai-textarea-wrap { flex: 1; position: relative; display: flex; }
+.ai-textarea-wrap textarea { padding-left: 38px; }
+.ai-input button.attach { position: absolute; left: 6px; bottom: 6px;
+                          width: 28px; height: 28px; padding: 0; line-height: 1;
+                          background: transparent; color: #666; border: 1px solid #ddd;
+                          border-radius: 6px; font-size: 14px;
+                          display: flex; align-items: center; justify-content: center; }
+.ai-input button.attach:hover { background: #f5f5f5; border-color: #1a73e8; }
+.ai-thumbs { display: none; flex-wrap: wrap; gap: 6px; }
+.ai-thumbs.show { display: flex; }
+.ai-thumb { position: relative; width: 56px; height: 56px; border: 1px solid #ddd;
+            border-radius: 4px; overflow: hidden; background: #f5f5f5; }
+.ai-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ai-thumb.uploading::after { content: '...'; position: absolute; inset: 0; display: flex;
+                              align-items: center; justify-content: center;
+                              background: rgba(255,255,255,0.65); font-size: 18px; color: #1a73e8; }
+.ai-thumb .x { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px;
+               border-radius: 50%; background: rgba(0,0,0,0.6); color: #fff; font-size: 11px;
+               line-height: 14px; cursor: pointer; display: flex; align-items: center;
+               justify-content: center; border: none; padding: 0; }
+.ai-thumb .x:hover { background: #d93025; }
 
 .ai-msg.assistant { padding: 10px 14px; position: relative; }
 .ai-copy-btn { position: absolute; top: 6px; right: 6px; padding: 2px 8px;
@@ -645,8 +686,15 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
   </div>
   <div id="ai_messages" class="ai-messages"></div>
   <div class="ai-input">
-    <textarea id="ai_input" rows="3" placeholder="描述问题或追问..."></textarea>
-    <button id="ai_send" onclick="aiPrimaryClick()">发送</button>
+    <div id="ai_thumbs" class="ai-thumbs"></div>
+    <div class="ai-input-row">
+      <div class="ai-textarea-wrap">
+        <textarea id="ai_input" rows="3" placeholder="描述问题或追问，支持粘贴/拖拽图片..."></textarea>
+        <button class="attach" onclick="aiPickFiles()" title="附加图片">📎</button>
+      </div>
+      <button id="ai_send" onclick="aiPrimaryClick()">发送</button>
+    </div>
+    <input type="file" id="ai_file_input" accept="image/*" multiple style="display:none">
   </div>
 </div>
 
@@ -879,6 +927,69 @@ let aiThinkingTimer = null;
 let aiSendStartedAt = 0;
 let aiCurrentEs = null;
 let aiSending = false;
+const aiImages = [];
+
+function aiPickFiles() {
+    document.getElementById('ai_file_input').click();
+}
+
+async function aiAddImage(file) {
+    if (!file || !file.type || !file.type.startsWith('image/')) return;
+    const url = URL.createObjectURL(file);
+    const entry = { id: null, url, name: file.name || 'image', uploading: true };
+    aiImages.push(entry);
+    aiRenderThumbs();
+    try {
+        const resp = await fetch('/api/ai/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': file.type || 'application/octet-stream' },
+            body: file,
+        });
+        let j = null;
+        try { j = await resp.json(); } catch {}
+        if (resp.ok && j && j.id) {
+            entry.id = j.id;
+            entry.uploading = false;
+        } else {
+            const msg = (j && j.error) || ('HTTP ' + resp.status);
+            console.warn('upload failed:', msg);
+            aiAppendMsg('error', '图片上传失败: ' + msg);
+            const idx = aiImages.indexOf(entry);
+            if (idx >= 0) aiImages.splice(idx, 1);
+        }
+    } catch (e) {
+        console.warn('upload error:', e);
+        aiAppendMsg('error', '图片上传异常: ' + (e && e.message || e));
+        const idx = aiImages.indexOf(entry);
+        if (idx >= 0) aiImages.splice(idx, 1);
+    }
+    aiRenderThumbs();
+}
+
+function aiRemoveImage(idx) {
+    const it = aiImages[idx];
+    if (it && it.url) { try { URL.revokeObjectURL(it.url); } catch {} }
+    aiImages.splice(idx, 1);
+    aiRenderThumbs();
+}
+
+function aiClearImages() {
+    for (const it of aiImages) { if (it.url) { try { URL.revokeObjectURL(it.url); } catch {} } }
+    aiImages.length = 0;
+    aiRenderThumbs();
+}
+
+function aiRenderThumbs() {
+    const c = document.getElementById('ai_thumbs');
+    if (!c) return;
+    c.classList.toggle('show', aiImages.length > 0);
+    c.innerHTML = aiImages.map((m, i) =>
+        '<div class="ai-thumb' + (m.uploading ? ' uploading' : '') + '" title="' + escHtml(m.name) + '">' +
+        '<img src="' + m.url + '" alt="">' +
+        '<button class="x" onclick="aiRemoveImage(' + i + ')">×</button>' +
+        '</div>'
+    ).join('');
+}
 
 function openAiDrawer() {
     document.getElementById('ai_drawer').classList.add('open');
@@ -907,6 +1018,7 @@ function resetAiSession() {
     aiSessionId = null;
     aiCurrentAssistantEl = null;
     document.getElementById('ai_messages').innerHTML = '';
+    aiClearImages();
 }
 
 function aiCopyMsg(btn) {
@@ -983,20 +1095,29 @@ function aiRenderThinking() {
 
 function sendAi() {
     const input = document.getElementById('ai_input');
-    const prompt = input.value.trim();
-    if (!prompt) return;
+    let prompt = input.value.trim();
+    const hasReadyImg = aiImages.some(m => m.id);
+    if (!prompt && !hasReadyImg) return;
+    if (aiImages.some(m => m.uploading)) {
+        aiAppendMsg('error', '图片还在上传中，请稍候');
+        return;
+    }
+    if (!prompt) prompt = '请看图分析';
+    const imgIds = aiImages.filter(m => m.id).map(m => m.id).join(',');
     input.value = '';
     input.dispatchEvent(new Event('input'));
-    aiAppendMsg('user', prompt);
+    aiAppendMsg('user', prompt + (imgIds ? ' [+' + aiImages.length + ' 图片]' : ''));
+    aiClearImages();
     aiCurrentAssistantEl = null;
     aiClearThinking();
     aiSendStartedAt = Date.now();
     aiSetThinking('AI 正在思考...');
     aiSetSending(true);
 
+    const imgQs = imgIds ? '&images=' + encodeURIComponent(imgIds) : '';
     const url = aiSessionId
-        ? '/api/ai/chat?session=' + encodeURIComponent(aiSessionId) + '&prompt=' + encodeURIComponent(prompt)
-        : '/api/ai/start?prompt=' + encodeURIComponent(prompt);
+        ? '/api/ai/chat?session=' + encodeURIComponent(aiSessionId) + '&prompt=' + encodeURIComponent(prompt) + imgQs
+        : '/api/ai/start?prompt=' + encodeURIComponent(prompt) + imgQs;
 
     const es = new EventSource(url);
     aiCurrentEs = es;
@@ -1073,6 +1194,39 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         inp.addEventListener('input', autoResize);
         autoResize();
+        inp.addEventListener('paste', e => {
+            if (!e.clipboardData) return;
+            let used = false;
+            for (const it of e.clipboardData.items) {
+                if (it.kind === 'file' && it.type && it.type.startsWith('image/')) {
+                    const f = it.getAsFile();
+                    if (f) { aiAddImage(f); used = true; }
+                }
+            }
+            if (used) e.preventDefault();
+        });
+    }
+    const fi = document.getElementById('ai_file_input');
+    if (fi) {
+        fi.addEventListener('change', e => {
+            for (const f of e.target.files) aiAddImage(f);
+            e.target.value = '';
+        });
+    }
+    const drawer = document.getElementById('ai_drawer');
+    if (drawer) {
+        drawer.addEventListener('dragover', e => {
+            if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+                e.preventDefault();
+            }
+        });
+        drawer.addEventListener('drop', e => {
+            if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+            e.preventDefault();
+            for (const f of e.dataTransfer.files) {
+                if (f.type && f.type.startsWith('image/')) aiAddImage(f);
+            }
+        });
     }
 });
 
@@ -1115,6 +1269,51 @@ init();
 # --- HTTP Server ---
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/ai/upload":
+            self._handle_upload()
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def _handle_upload(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._json({"error": "invalid content-length"}, 400)
+            return
+        if length <= 0:
+            self._json({"error": "empty body"}, 400)
+            return
+        if length > MAX_IMG_BYTES:
+            self._json({"error": f"image too large (max {MAX_IMG_BYTES} bytes)"}, 413)
+            return
+        body = self.rfile.read(length)
+        ext = _detect_image_ext(body)
+        if not ext:
+            self._json({"error": "unsupported image type (png/jpeg/gif/webp only)"}, 400)
+            return
+        img_id = uuid.uuid4().hex
+        IMG_DIR.mkdir(parents=True, exist_ok=True)
+        path = IMG_DIR / f"{img_id}.{ext}"
+        path.write_bytes(body)
+        self.log_message("[chat] upload id=%s size=%d ext=%s", img_id, length, ext)
+        self._json({"id": img_id, "size": length, "ext": ext})
+
+    def _resolve_images(self, params) -> list[str]:
+        raw = params.get("images", "")
+        if not raw:
+            return []
+        out = []
+        for ident in raw.split(","):
+            ident = ident.strip()
+            if not re.fullmatch(r"[0-9a-f]{32}", ident):
+                continue
+            for p in IMG_DIR.glob(f"{ident}.*"):
+                out.append(str(p))
+                break
+        return out
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -1292,13 +1491,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_ai_start(self, params):
         prompt = params.get("prompt", "").strip()
-        self.log_message("[chat] start prompt_len=%d prompt=%r", len(prompt), prompt)
+        images = self._resolve_images(params)
+        self.log_message("[chat] start prompt_len=%d images=%d prompt=%r", len(prompt), len(images), prompt)
         if not prompt:
             self._json({"error": "prompt required"}, 400)
             return
 
         def _tap():
-            for ev in chat.start_session(prompt):
+            for ev in chat.start_session(prompt, images):
                 if ev.get("type") == "session":
                     self.log_message("[chat] start session=%s", ev.get("session_id"))
                 yield ev
@@ -1307,11 +1507,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _handle_chat(self, params):
         session = params.get("session", "").strip()
         prompt = params.get("prompt", "").strip()
-        self.log_message("[chat] resume session=%s prompt_len=%d prompt=%r", session, len(prompt), prompt)
+        images = self._resolve_images(params)
+        self.log_message("[chat] resume session=%s prompt_len=%d images=%d prompt=%r", session, len(prompt), len(images), prompt)
         if not session or not prompt:
             self._json({"error": "session and prompt required"}, 400)
             return
-        self._sse_stream(chat.resume_session(session, prompt))
+        self._sse_stream(chat.resume_session(session, prompt, images))
 
     def _html(self, content):
         body = content.encode("utf-8")
