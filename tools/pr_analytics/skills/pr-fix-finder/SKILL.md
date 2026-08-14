@@ -16,7 +16,7 @@ description: 用户给出 StarRocks 的 crash 堆栈、报错信息、异常现�
 ## 核心前提
 
 - **知识库状态**：库中所有的 PR 都是**已合入 (Merged)** 的。不存在"正在修复"或"待合并"的状态。
-- **覆盖范围**：知识库同时索引开源仓库（`StarRocks/starrocks`，`repo=oss`）与企业仓库（`repo=cd` CelerData 历史 / `repo=ms` MirrorShip 当前源）的合并 PR。检索接口默认 `repo=all`，联合全部仓库返回结果；企业仓库中从开源同步过来的 PR（分类为 `sync`）不会被单独摘要和索引，只体现在同步映射关系里，不会作为独立候选出现。
+- **覆盖范围**：知识库同时索引开源仓库（`StarRocks/starrocks`，`repo=oss`）与企业仓库（`repo=cd` CelerData 历史 / `repo=ms` MirrorShip 当前源）的合并 PR。检索接口默认 `repo=all`，联合全部仓库返回结果；企业仓库中的 `sync`（开源同步）、`backport`、`conflict_fix`（同步解冲突，`change_type=SyncFix`）三类 PR 都不会被单独摘要和索引，只体现在同步/版本映射关系里，不会作为独立候选出现——能作为独立候选检索到的企业 PR 只有 `exclusive`（企业独有）一类。
 - **目标**：找到修复该问题的具体 PR，或确认在当前知识库中未发现相关修复。
 - **核心数据**：每个 PR 都有结构化的 `diff_keywords`（symptom/cause/fix/symbols/files/keywords）和 `searchable_text`。`searchable_text` 是倒排检索文本，也是生成 `embedding` 的语义来源；向量索引建立在 `embedding` 字段上。它们是检索和评估的一等证据源。
 
@@ -30,7 +30,7 @@ description: 用户给出 StarRocks 的 crash 堆栈、报错信息、异常现�
 
 ## 依赖接口
 
-默认假设 PR 检索服务已经启动，基础地址为 `http://172.26.80.30:8888`。如果用户或环境明确提供了其他地址，优先使用那个地址。
+默认假设 PR 检索服务已经启动，基础地址为 `http://172.21.188.190:8888`。如果用户或环境明确提供了其他地址，优先使用那个地址。
 
 ### 接口定义
 
@@ -47,7 +47,7 @@ description: 用户给出 StarRocks 的 crash 堆栈、报错信息、异常现�
   - `merged_at`, `additions`, `deletions`, `changed_files`
   - `score`（相似度分数）
   - `versions`：对象数组，格式为 `[{"version": "main", "backport_pr": null}, {"version": "3.3.2", "backport_pr": 71234}]`
-  - `ent_syncs`（仅 `repo=oss` 的结果）：该 PR 自身（不含 backport PR）已同步到企业版的落点列表；含 backport 的完整落点需调用 `/api/agent/pr/<number>`，如 `[{"ent_pr": 59488, "ent_repo": "ms", "version": "4.1-ee"}]`（`ent_repo` 指落到哪个企业仓库 `cd`/`ms`）
+  - `ent_syncs`（仅 `repo=oss` 的结果）：该 PR **及其 OSS backport PR** 已同步到企业版的完整落点列表（直接 sync 与"OSS backport 的 sync"都包含）。每项形如 `[{"ent_pr": 59488, "ent_repo": "ms", "version": "4.1-ee", "via_oss_pr": 76640, "ent_versions": [{"version": "4.1", "backport_pr": 59500}]}]`：`ent_repo` 指落到哪个企业仓库（`cd`/`ms`），`via_oss_pr` 指该 sync 经由哪个 OSS PR（等于本 PR 号即直接 sync，否则是本 PR 的某个 backport），`ent_versions` 是该企业 sync PR 在企业仓内自身的分支 backport（即企业侧还落到了哪些分支）。字段现已与 `/api/agent/pr` 的 `ent_syncs` 一致，无需再靠 pr 详情补 backport 落点。
 
 #### `GET /api/agent/filter`
 
@@ -70,8 +70,8 @@ PR 详情。
   - `body`（PR 原始描述）
   - `versions`：对象数组，格式同上
   - `github_url`
-  - `repo=oss` 时含 `ent_syncs`：`[{"ent_pr": 59488, "ent_repo": "ms", "version": "4.1-ee", "via_oss_pr": 76640}]`，该 PR 及其 backport PR 已同步到企业版的落点（`ent_repo` 区分 `cd`/`ms`）
-  - `repo=cd|ms`（企业仓库）时含 `synced_from`：`[{"oss_pr": 76640, "version": "4.1-ee"}]`，该 PR 是否是从某个开源 PR 同步落地的；通常为空——因为被判定为 `sync` 分类的 PR 不会被 enrich，不会进入 `pr_data`，也就查不到详情（能查到详情的企业 PR 一定是 `conflict_fix` 或 `exclusive` 分类，本身就不是单纯的开源同步）
+  - `repo=oss` 时含 `ent_syncs`：`[{"ent_pr": 59488, "ent_repo": "ms", "version": "4.1-ee", "via_oss_pr": 76640, "ent_versions": [{"version": "4.1", "backport_pr": 59500}]}]`，该 PR 及其 backport PR 已同步到企业版的落点（`ent_repo` 区分 `cd`/`ms`；`ent_versions` 为该企业 sync PR 在企业仓内的分支 backport 落点）；字段与 `/api/agent/search` 的 `ent_syncs` 一致
+  - `repo=cd|ms`（企业仓库）时含 `synced_from`：`[{"oss_pr": 76640, "version": "4.1-ee"}]`，该 PR 是否是从某个开源 PR 同步落地的；通常为空——因为 `sync` / `backport` / `conflict_fix` 三类都不会被 enrich，不会进入 `pr_data`，也就查不到详情（能查到详情的企业 PR 只有 `exclusive`（企业独有）一类，本身就不是开源同步）
   - 输入的编号是 backport PR 号时，会在对应 `repo` 内自动反查主 PR：返回的 `result.pr_number` 是**主 PR 号**，并附 `resolved_from_backport_pr`=你实际输入的 backport 号。结论里应同时标注主 PR 号与该 backport 号，别把返回的主 PR 号误当成你查询的那个编号
 
 ### 代理使用
@@ -373,10 +373,10 @@ Diff 验证总量限制：每次分析最多验证 6 个候选的 diff（含 `/a
 - **`🔗 证据 PR`**：编号、所属仓库（按结果的 `repo`：`oss`=StarRocks/starrocks / `cd`=CelerData 历史 / `ms`=MirrorShip 当前源；用候选自带的值，不要写死某个企业仓库）、标题、链接、理由
 - **`📌 命中原因`**：展示结构化证据对齐，例如：
   > symptom 匹配 "wrong result"，symbols 匹配 `HashJoinNode`，fix 描述了修复 NULL 处理逻辑
-- **`🌿 版本信息`**：从 PR 详情的 `versions` 数组推断修复进入了哪些分支。`versions` 格式为对象数组：`[{"version": "main", "backport_pr": null}, {"version": "3.3.2", "backport_pr": 71234}]`，其中 `backport_pr` 为 null 表示主合入，非 null 表示通过该 backport PR 合入对应版本。如果证据 PR 是开源 PR 且 `ent_syncs` 非空，补充说明已同步进企业版的哪个 PR / 版本；如果证据 PR 是企业 PR 且 `synced_from` 非空，说明其对应的开源来源 PR。
+- **`🌿 版本信息`**：从 PR 详情的 `versions` 数组推断修复进入了哪些分支。`versions` 格式为对象数组：`[{"version": "main", "backport_pr": null}, {"version": "3.3.2", "backport_pr": 71234}]`，其中 `backport_pr` 为 null 表示主合入，非 null 表示通过该 backport PR 合入对应版本。如果证据 PR 是开源 PR 且 `ent_syncs` 非空，补充说明已同步进企业版的哪个 PR / 版本，并用每项的 `ent_versions` 说明企业侧还落到了哪些分支（如 `CD main + 4.1`）；如果证据 PR 是企业 PR 且 `synced_from` 非空，说明其对应的开源来源 PR。
 - **`🔎 检索过程摘要`**：最多 3 轮，每轮一句话
 
-**企业独有修复标注**：如果证据 PR 只在企业仓库检索到、且不是从开源同步过来的（即企业侧 `synced_from` 为空——这也是 `conflict_fix` / `exclusive` 分类 PR 的常态，因为会被检索到的企业 PR 从不是 `sync` 分类），必须在结论中明确说明"该修复仅企业版（按候选的 `repo`：`cd`=CelerData 或 `ms`=MirrorShip 仓库）包含，开源版未包含"，不要让用户误以为开源版也已修复。
+**企业独有修复标注**：如果证据 PR 只在企业仓库检索到、且不是从开源同步过来的（即企业侧 `synced_from` 为空——这也是 `exclusive` 分类 PR 的常态，因为能被检索到的企业 PR 只有 `exclusive`、从不是 `sync` / `backport` / `conflict_fix`），必须在结论中明确说明"该修复仅企业版（按候选的 `repo`：`cd`=CelerData 或 `ms`=MirrorShip 仓库）包含，开源版未包含"，不要让用户误以为开源版也已修复。
 
 如果同时存在根因修复和防御性修复，必须分开输出：
 
