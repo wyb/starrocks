@@ -355,19 +355,42 @@ def attach_versions(results: list) -> list:
 
 
 def attach_sync(results: list) -> list:
-    """Attach direct enterprise sync landings to oss rows."""
-    oss_prs = sorted({int(r["pr_number"]) for r in results if r.get("repo", "oss") == "oss"})
-    if not oss_prs:
+    """Attach enterprise sync landings to oss rows. A sync can land on the oss PR itself OR on one
+    of its oss backport PRs (an indirect sync, e.g. oss #500 -> oss backport #600 -> CD #200), and
+    each enterprise sync PR may itself be backported to release branches inside the enterprise repo
+    (in pr_versions, keyed by the sync PR). Relies on attach_versions having run first so
+    r["versions"] (with backport_pr) is populated."""
+    # owner: any oss_pr (a result PR, or one of its oss backport PRs) -> the result PR it belongs to
+    owner = {}
+    for r in results:
+        if r.get("repo", "oss") != "oss":
+            continue
+        pn = int(r["pr_number"])
+        owner[pn] = pn  # direct ownership wins over any setdefault below
+        for v in (r.get("versions") or []):
+            if v.get("backport_pr"):
+                owner.setdefault(int(v["backport_pr"]), pn)
+    if not owner:
         return results
-    in_list = ",".join(str(n) for n in oss_prs)
+    in_list = ",".join(str(n) for n in sorted(owner))
     try:
         rows = sr_query(f"SELECT oss_pr, ent_pr, ent_repo, version FROM pr_sync WHERE oss_pr IN ({in_list});")
     except Exception:
         return results  # pr_sync absent (pre-migration): degrade gracefully
     m = {}
+    syncs = []
     for row in rows:
-        m.setdefault(int(row["oss_pr"]), []).append(
-            {"ent_pr": int(row["ent_pr"]), "ent_repo": row.get("ent_repo", "cd"), "version": row.get("version")})
+        op = int(row["oss_pr"])
+        s = {"ent_pr": int(row["ent_pr"]), "ent_repo": row.get("ent_repo", "cd"),
+             "version": row.get("version"), "via_oss_pr": op}
+        m.setdefault(owner.get(op, op), []).append(s)
+        syncs.append(s)
+    # Each enterprise sync PR may itself be backported to release branches within the enterprise
+    # repo; those live in pr_versions keyed by the sync PR (not in pr_sync). Attach them so the UI
+    # can show the sync's full branch spread, not just the main-branch landing.
+    ev = fetch_pr_versions([(s["ent_pr"], s["ent_repo"]) for s in syncs])
+    for s in syncs:
+        s["ent_versions"] = ev.get((s["ent_pr"], s["ent_repo"]), [])
     for r in results:
         if r.get("repo", "oss") == "oss":
             r["ent_syncs"] = m.get(int(r["pr_number"]), [])
@@ -412,10 +435,14 @@ LIMIT 1;
         in_list = ",".join(str(n) for n in sorted(nums))
         try:
             rows2 = sr_query(f"SELECT oss_pr, ent_pr, ent_repo, version FROM pr_sync WHERE oss_pr IN ({in_list});")
-            result["ent_syncs"] = [
+            syncs = [
                 {"ent_pr": int(r["ent_pr"]), "ent_repo": r.get("ent_repo", "cd"),
                  "version": r.get("version"), "via_oss_pr": int(r["oss_pr"])}
                 for r in rows2]
+            ev = fetch_pr_versions([(s["ent_pr"], s["ent_repo"]) for s in syncs])
+            for s in syncs:
+                s["ent_versions"] = ev.get((s["ent_pr"], s["ent_repo"]), [])
+            result["ent_syncs"] = syncs
         except Exception:
             result["ent_syncs"] = []
     else:
@@ -518,12 +545,15 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
          font-size: 11px; font-weight: 500; }
 .badge-module { background: #e8f0fe; color: #1a73e8; }
 .badge-type { background: #fce8e6; color: #c5221f; }
-.badge-version { background: #e6f4ea; color: #137333; }
-.badge-score { background: #fef7e0; color: #b06000; }
-.badge-repo-oss { background: #d8f0ec; color: #0a6b5e; }
+.badge-version { background: #eff8f3; color: #137333; }
+.badge-score { background: #ede7f6; color: #5e35b1; }
+.badge-repo-oss { background: #d6e4f8; color: #1a5cb0; }
 .badge-repo-cd { background: #fce8b2; color: #7a4f01; }
-.badge-repo-ms { background: #d7e8fb; color: #0b4a8f; }
+.badge-repo-ms { background: #fbdce8; color: #ad2b6b; }
 .badge-sync { background: #f3e8fd; color: #7627bb; text-decoration: none; }
+.result-header.xrepo { gap: 6px; }
+.repo-group { display: inline-flex; align-items: center; gap: 6px; }
+.result-header .sep { color: #dadce0; }
 .meta { font-size: 13px; color: #666; margin-bottom: 6px; }
 .summary { font-size: 14px; color: #444; line-height: 1.5; }
 .details-row { margin-top: 8px; }
@@ -544,8 +574,6 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 .keywords-detail pre { font-size: 14px; line-height: 1.45; white-space: pre-wrap; background: #fff;
                        border-left: 3px solid #dadce0; padding: 8px 10px;
                        border-radius: 4px; font-family: inherit; color: #888; }
-.score-bar-bg { display: inline-block; width: 60px; height: 6px; background: #e8eaed; border-radius: 3px; vertical-align: middle; position: relative; }
-.score-bar { display: block; height: 6px; background: #1a73e8; border-radius: 3px; position: absolute; top: 0; left: 0; }
 
 .loading { text-align: center; padding: 40px; color: #666; }
 .empty { text-align: center; padding: 40px; color: #999; }
@@ -892,6 +920,35 @@ async function doAnalyze() {
     }
 }
 
+// Build the cross-repo version/sync line: "OSS <versions> | CD <versions> | ... | score".
+// Each repo label is a colored badge; each version is a link to that repo's PR for that branch.
+function crossRepoRow(r, scoreHtml) {
+    const rRepo = r.repo || 'oss';
+    const dedup = (arr) => { const seen = {}, out = []; arr.forEach(e => { if (e.version && !seen[e.version]) { seen[e.version] = 1; out.push(e); } }); return out; };
+    const mkGroup = (repo, entries) => {
+        entries = dedup(entries);
+        if (!entries.length) return '';
+        const label = '<span class="badge badge-repo-' + (REPO_LABELS[repo] ? repo : 'oss') + '">' + repoLabel(repo) + '</span>';
+        const vers = entries.map(e => '<a href="' + prUrl(repo, e.pr) + '" target="_blank" class="badge badge-version" style="text-decoration:none;">' + escHtml(e.version) + '</a>').join(' ');
+        return '<span class="repo-group">' + label + ' ' + vers + '</span>';
+    };
+    const groups = [];
+    // this PR's own branch spread (falls back to its own version if pr_versions has no rows)
+    let own = (r.versions || []).map(v => ({ version: v.version, pr: v.backport_pr || r.pr_number }));
+    if (!own.length) own = [{ version: r.version || 'main', pr: r.pr_number }];
+    groups.push(mkGroup(rRepo, own));
+    // enterprise sync landings, grouped by enterprise repo, each incl. its own branch backports
+    const byRepo = {};
+    (r.ent_syncs || []).forEach(s => {
+        const er = s.ent_repo || 'cd';
+        (byRepo[er] = byRepo[er] || []).push({ version: s.version || 'main', pr: s.ent_pr });
+        (s.ent_versions || []).forEach(ev => byRepo[er].push({ version: ev.version, pr: ev.backport_pr || s.ent_pr }));
+    });
+    Object.keys(REPO_LABELS).forEach(er => { if (byRepo[er]) groups.push(mkGroup(er, byRepo[er])); });
+    if (scoreHtml) groups.push(scoreHtml);
+    return groups.filter(Boolean).join('<span class="sep">|</span>');
+}
+
 function renderResults(results, showScore) {
     const el = document.getElementById('results');
     el.innerHTML = ''; 
@@ -908,8 +965,7 @@ function renderResultsIn(results, showScore, container) {
         const rRepo = r.repo || 'oss';
         const pUrl = prUrl(rRepo, r.pr_number);
         const scoreHtml = showScore && r.score
-            ? `<span class="badge badge-score">score: ${parseFloat(r.score).toFixed(4)}</span>
-               <span class="score-bar-bg"><span class="score-bar" style="width:${Math.max(parseFloat(r.score)*60, 4)}px"></span></span>`
+            ? `<span class="badge badge-score">score: ${parseFloat(r.score).toFixed(4)}</span>`
             : '';
         html += `
         <div class="result-card">
@@ -918,22 +974,7 @@ function renderResultsIn(results, showScore, container) {
                 <a class="pr-number" href="${pUrl}" target="_blank">#${r.pr_number}</a>
                 <span class="pr-title">${escHtml(r.title)}</span>
             </div>
-            <div class="result-header">
-                <span class="badge badge-repo-${REPO_LABELS[rRepo] ? rRepo : 'oss'}">${repoLabel(rRepo)}</span>
-                <span class="badge badge-type">${r.change_type || ''}</span>
-                <span class="badge badge-module">${r.module || ''}</span>
-                ${(r.versions || []).map(v => {
-                    const prLink = v.backport_pr || r.pr_number;
-                    const url = prUrl(rRepo, prLink);
-                    return '<a href="' + url + '" target="_blank" class="badge badge-version" style="text-decoration:none;">' + escHtml(v.version) + '</a>';
-                }).join('')}
-                ${(r.ent_syncs || []).map(s => {
-                    const er = s.ent_repo || 'cd';
-                    const label = repoLabel(er) + ' #' + s.ent_pr + (s.version && s.version !== 'main' ? ' (' + escHtml(s.version) + ')' : '');
-                    return '<a href="' + prUrl(er, s.ent_pr) + '" target="_blank" class="badge badge-sync">' + label + '</a>';
-                }).join('')}
-                ${scoreHtml}
-            </div>
+            <div class="result-header xrepo">${crossRepoRow(r, scoreHtml)}</div>
             <div class="meta">
                 Author: ${r.author || ''}
                 &nbsp;|&nbsp; Merged: ${r.merged_at || ''}
@@ -1319,8 +1360,15 @@ async function init() {
         const [stats, options] = await Promise.all([api('stats', {}), api('options', {})]);
         const se = document.getElementById('stats');
         if (stats) {
+            const byRepo = stats.by_repo || {};
+            // one card per repo that has data, in REPOS order (oss, cd, ms); same card style as Total
+            const repoCards = Object.keys(REPO_LABELS)
+                .filter(k => byRepo[k])
+                .map(k => `<div class="stat-card"><div class="num">${byRepo[k]}</div><div class="label">${REPO_LABELS[k]} PRs</div></div>`)
+                .join('');
             se.innerHTML = `
                 <div class="stat-card"><div class="num">${stats.total || 0}</div><div class="label">Total PRs</div></div>
+                ${repoCards}
                 <div class="stat-card"><div class="num">${stats.authors || 0}</div><div class="label">Contributors</div></div>
                 <div class="stat-card"><div class="num">${stats.earliest || '-'}</div><div class="label">Earliest</div></div>
                 <div class="stat-card"><div class="num">${stats.latest || '-'}</div><div class="label">Latest</div></div>`;
