@@ -23,7 +23,7 @@ import os
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pr import ACTIVE_REPOS  # repos to poll each cycle (frozen repos are excluded)
+from pr import ACTIVE_REPOS  # repos to poll each cycle (inactive repos are excluded)
 
 # 检查频率（秒）：1小时 = 3600秒
 INTERVAL = 3600

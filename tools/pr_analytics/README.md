@@ -15,7 +15,7 @@ Web UI ← 语义搜索 / searchable_text 关键词过滤 ← StarRocks (Primary
 - **关键词过滤**：只查询 `searchable_text` 的 LIKE / MATCH_ALL / MATCH_ANY
 - **PR body 清洗**：仅提取 `What I'm doing` section 之前的内容，过滤 template 噪声和 `Fixes #issue` 行
 - **Backport 处理**：自动识别 backport PR（title 含 `(backport #xxx)`），enrich 时跳过摘要生成，通过 `pr_versions` 表将版本信息关联到主 PR
-- **多仓库（oss + 企业）**：`pr.py` 内置 `REPOS` 注册表，每条带 `kind`（`oss`/`enterprise`）、`label`、`active`，其中 `kind` 驱动所有「企业 vs 开源」分支逻辑，所以换/加源仓库是改配置而非改代码。当前三个：`oss` → `StarRocks/starrocks`；`cd` → `CelerData/celerdata-enterprise`（**已冻结的历史**——企业源已迁走，daemon 不再轮询，但历史数据保留可查）；`ms` → `MirrorShipDB/mirrorship-enterprise`（**当前企业源**）。各仓库数据分目录（`data/<repo>/raw|enriched`，oss 沿用旧 `data/raw`）。`pr_data`/`pr_versions` 以 `(pr_number, repo)`（`pr_versions` 再加 `version`）为联合主键——各仓 PR 号区间重叠，联合主键避免互相覆盖；检索默认联合全部仓库，也可用 `--repo` / `repo=` 限定单仓库（`oss`/`cd`/`ms`/`all`）。
+- **多仓库（oss + 企业）**：`pr.py` 内置 `REPOS` 注册表，每条带 `kind`（`oss`/`enterprise`）、`label`、`active`，其中 `kind` 驱动所有「企业 vs 开源」分支逻辑，所以换/加源仓库是改配置而非改代码。当前三个：`oss` → `StarRocks/starrocks`；`cd` → `CelerData/celerdata-enterprise`（**当前企业源**——daemon 轮询）；`ms` → `MirrorShipDB/mirrorship-enterprise`（**尚未启用**——切换后才会有 PR，暂不轮询，但已可分析历史/回填）。各仓库数据分目录（`data/<repo>/raw|enriched`，oss 沿用旧 `data/raw`）。`pr_data`/`pr_versions` 以 `(pr_number, repo)`（`pr_versions` 再加 `version`）为联合主键——各仓 PR 号区间重叠，联合主键避免互相覆盖；检索默认联合全部仓库，也可用 `--repo` / `repo=` 限定单仓库（`oss`/`cd`/`ms`/`all`）。
 - **企业 PR 四分类**：fetch 阶段按标题 / 标签 / base 分支给每条企业 PR 打标（写入 raw JSON 的 `pr_kind` 字段），决定它进入哪条链路：
   - `sync`（约 90%，标题含 `(sync #N)` 或带 `sync` 标签）：从开源同步落地的 PR。不进 `pr_data`、不生成摘要，只由 `link-sync` 写入 `pr_sync(oss_pr, ent_pr, ent_repo, version, ent_merged_at)` 映射表（`ent_repo` 区分同步落到哪个企业仓库）。
   - `conflict_fix`（base 分支形如 `*-sync-pr-<N>`，或标题匹配冲突解决模式）：同步时人工解决冲突产生的 PR，照常 enrich，但 `change_type` 被强制标记为 `SyncFix`。
@@ -224,7 +224,7 @@ tail -f daemon.log
 
 实现细节：
 - 每小时运行一次
-- 内部对每个 active 仓库（由 `REPOS` 的 `active` 标志决定，当前 `oss` + `ms`；`cd` 已冻结、不再轮询）依次跑 `python3 pr.py pipeline --repo <repo> --days 2`（企业仓库侧会自动带上 `link-sync`）
+- 内部对每个 active 仓库（由 `REPOS` 的 `active` 标志决定，当前 `oss` + `cd`；`ms` 尚未启用、不轮询）依次跑 `python3 pr.py pipeline --repo <repo> --days 2`（企业仓库侧会自动带上 `link-sync`）
 - 启动时会自动切到 `tools/pr_analytics/` 目录，避免相对路径出错
 
 ### 11. HTTP API / Agent 接口

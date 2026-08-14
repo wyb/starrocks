@@ -89,7 +89,8 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "")
 DATA_DIR = Path(__file__).parent / "data"
 # Repo registry. `kind` drives all enterprise-vs-oss behavior (classification,
 # sync mapping, migration guard) so adding a new source repo is config-only.
-# `cd` = CelerData history (frozen); `ms` = MirrorShip, the current enterprise source.
+# `cd` = CelerData, the current enterprise source; `ms` = MirrorShip (not live yet —
+# no PRs until the future cutover, so it is inactive and the daemon skips it).
 REPOS = {
     "oss": {
         "slug": "StarRocks/starrocks",
@@ -103,7 +104,7 @@ REPOS = {
         "slug": "CelerData/celerdata-enterprise",
         "kind": "enterprise",
         "label": "CD",
-        "active": False,   # frozen history: enterprise source moved to ms; daemon skips
+        "active": True,    # current enterprise source; daemon polls it
         "raw_dir": DATA_DIR / "cd" / "raw",
         "enriched_dir": DATA_DIR / "cd" / "enriched",
     },
@@ -111,7 +112,7 @@ REPOS = {
         "slug": "MirrorShipDB/mirrorship-enterprise",
         "kind": "enterprise",
         "label": "MS",
-        "active": True,
+        "active": False,   # not live yet: enterprise source is still cd; daemon skips until cutover
         "raw_dir": DATA_DIR / "ms" / "raw",
         "enriched_dir": DATA_DIR / "ms" / "enriched",
     },
@@ -1545,7 +1546,7 @@ def main():
 
     # link-sync: scan enterprise raw files and load sync mappings into pr_sync
     p_link_sync = sub.add_parser("link-sync", help="Scan enterprise raw files and load (sync #N) mappings into pr_sync")
-    p_link_sync.add_argument("--repo", type=str, default="ms", choices=ENTERPRISE_REPOS, help="Enterprise repo: ms (current source, default) or cd")
+    p_link_sync.add_argument("--repo", type=str, default="cd", choices=ENTERPRISE_REPOS, help="Enterprise repo: cd (current source, default) or ms")
     p_link_sync.add_argument("--file", type=str, help="Raw PR JSON file path")
     p_link_sync.add_argument("--days", type=int, default=1, help="Process last N days")
     p_link_sync.add_argument("--since", type=str, help="Start date")

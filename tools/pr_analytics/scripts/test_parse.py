@@ -21,10 +21,10 @@ check("repos.keys", sorted(REPOS.keys()), ["cd", "ms", "oss"])
 check("repos.oss.slug", REPOS["oss"]["slug"], "StarRocks/starrocks")
 check("repos.cd.slug", REPOS["cd"]["slug"], "CelerData/celerdata-enterprise")
 check("repos.ms.slug", REPOS["ms"]["slug"], "MirrorShipDB/mirrorship-enterprise")
-# active/label drive the daemon poll set and UI badges — protect the frozen model
+# active/label drive the daemon poll set and UI badges — cd is the current enterprise source
 check("repos.oss.active", REPOS["oss"]["active"], True)
-check("repos.cd.active", REPOS["cd"]["active"], False)   # CelerData frozen: daemon skips it
-check("repos.ms.active", REPOS["ms"]["active"], True)
+check("repos.cd.active", REPOS["cd"]["active"], True)    # CelerData is the live enterprise source
+check("repos.ms.active", REPOS["ms"]["active"], False)   # MirrorShip not live yet: daemon skips it
 check("repos.labels", [REPOS[r]["label"] for r in ("oss", "cd", "ms")], ["OSS", "CD", "MS"])
 # kind drives all enterprise-vs-oss behavior
 check("kind.oss", is_enterprise("oss"), False)
