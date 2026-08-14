@@ -286,8 +286,16 @@ def parse_sync(title: str) -> list[int]:
 
 def clean_base_ref(base_ref: str) -> str:
     """Derive branch-granularity version from a base ref.
-    main-sync-pr-76688 -> main; branch-4.1-sync-pr-76229 -> 4.1; branch-3.5 -> 3.5."""
-    b = re.sub(r"-sync-pr-\d+$", "", base_ref or "")
+    main-sync-pr-76688 -> main; branch-4.1-sync-pr-76229 -> 4.1; branch-3.5 -> 3.5;
+    mergify/bp/branch-4.0/pr-51951 -> 4.0 (Mergify backport branch -> its target branch)."""
+    b = base_ref or ""
+    # Mergify backport/copy branches encode the real target branch in the middle segment:
+    #   mergify/bp/branch-4.0/pr-51951 -> branch-4.0 -> 4.0 ; mergify/bp/main/pr-123 -> main.
+    # Without unwrapping it here the whole ref leaks through as the "version" string.
+    m = re.match(r"^mergify/(?:bp|copy)/(.+)/pr-\d+$", b)
+    if m:
+        b = m.group(1)
+    b = re.sub(r"-sync-pr-\d+$", "", b)
     if not b or b == "main":
         return "main"
     m = re.match(r"branch-(.+)$", b)
@@ -296,16 +304,25 @@ def clean_base_ref(base_ref: str) -> str:
     return b
 
 
+def normalize_version(v: str) -> str:
+    """Unify version granularity by dropping -ee (enterprise edition) and -cc suffixes:
+    4.1.4-ee -> 4.1.4, 3.5-cc -> 3.5, 4.0-ee-cc -> 4.0. Keeps a version comparable across the
+    OSS/enterprise split so pr_data/pr_versions/pr_sync join on one canonical version key."""
+    v = re.sub(r"(?:-(?:ee|cc))+$", "", (v or "").strip())
+    return v or "main"
+
+
 def derive_version(repo: str, labels: str, base_ref: str) -> str:
     """version:x.y.z(-ee) label first; otherwise fall back to the base branch — for ANY repo.
     Without the base_ref fallback for oss too, a backport merged into an unlabeled release
     branch (e.g. branch-3.5-cc, which never gets a version: label) derives "main" and is then
     silently dropped by link-backport; the fallback gives it a branch-granularity version.
-    Clamped to 64 chars to fit the version VARCHAR(64) column. (repo kept for call-site clarity.)"""
+    The result is normalize_version()'d (no -ee/-cc suffix) and clamped to the version
+    VARCHAR(64) column. (repo kept for call-site clarity.)"""
     v = infer_version(labels)
-    if v != "main":
-        return v[:64]
-    return clean_base_ref(base_ref)[:64]
+    if v == "main":
+        v = clean_base_ref(base_ref)
+    return normalize_version(v)[:64]
 
 
 def classify_ent_pr(title: str, labels: str, base_ref: str) -> tuple[str, int | None]:
@@ -906,9 +923,15 @@ def _enrich_file(file_path: Path, output: Path = None):
             skip_backport += 1
             continue
 
-        # Skip already enriched with the current schema
+        # Already enriched with the current schema: keep the expensive summary/embedding from
+        # the existing record, but refresh every other field (version, base_ref, pr_kind,
+        # change_type, module, title, body, ...) from the freshly-fetched raw row. `{**existing,
+        # **row}` lets raw overwrite all shared keys while the enrich-only fields — ai_summary,
+        # ai_summary_en, diff_keywords, searchable_text, embedding, which are absent from raw —
+        # survive. So re-running enrich after a re-fetch propagates metadata fixes without re-
+        # summarizing / re-embedding.
         if pr_num in existing and _is_current_enriched(existing[pr_num]):
-            enriched_rows.append(existing[pr_num])
+            enriched_rows.append({**existing[pr_num], **row})
             continue
 
         print(f"  [{i+1}/{total}] PR #{pr_num}: pending - {row['title'][:80]}...")
@@ -944,7 +967,18 @@ def _enrich_file(file_path: Path, output: Path = None):
         with open(out_file, "w") as f:
             json.dump(enriched_rows, f, ensure_ascii=False, indent=2)
 
-    print(f"  {out_file.name}: enriched {new_count}, skipped backport {skip_backport}, skipped existing {total - new_count - skip_backport}")
+    # When there were no pending batches (every kept row was already enriched) the per-batch save
+    # above never ran, yet the reused rows may have had their metadata refreshed from raw — so
+    # write them back here. If batches did run, the last per-batch save already persisted the full
+    # set, so skip the redundant (large, embedding-heavy) rewrite. Guarded on non-empty so a raw
+    # file that is now entirely sync/backport never blanks an existing enriched file.
+    if not batches and enriched_rows:
+        with open(out_file, "w") as f:
+            json.dump(enriched_rows, f, ensure_ascii=False, indent=2)
+
+    reused = total - new_count - skip_backport
+    print(f"  {out_file.name}: enriched {new_count}, skipped backport {skip_backport}, "
+          f"reused {reused} (summary/embedding kept, metadata refreshed)")
     return new_count
 
 
@@ -1271,6 +1305,7 @@ def cmd_load(args):
         for r in rows:
             r.setdefault("repo", "oss")  # old enriched files lack repo; pr_data.repo is NOT NULL
             _assert_known_repo(r["repo"], file_path.name)
+            r["version"] = normalize_version(r.get("version", "main"))  # strip -ee/-cc from legacy JSON too
         if not checked_migrated and any(is_enterprise(r.get("repo", "oss")) for r in rows):
             _assert_pr_data_migrated()
             checked_migrated = True
@@ -1315,7 +1350,7 @@ def cmd_link_backport(args):
             source_prs = parse_backport(row.get("title", ""))
             if not source_prs:
                 continue
-            version = row.get("version", "main")
+            version = normalize_version(row.get("version", "main"))
             if version == "main":
                 # Backport PRs should land on a release branch; skip if unresolved
                 continue
@@ -1370,7 +1405,7 @@ def cmd_link_sync(args):
                 "oss_pr": int(src),
                 "ent_pr": int(row["pr_number"]),
                 "ent_repo": er,
-                "version": row.get("version", "main"),
+                "version": normalize_version(row.get("version", "main")),
                 "ent_merged_at": row.get("merged_at"),
             })
 

@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pr import (REPOS, parse_sync, clean_base_ref, infer_version,
+from pr import (REPOS, parse_sync, clean_base_ref, infer_version, normalize_version,
                 derive_version, classify_ent_pr, parse_backport, is_enterprise)
 
 FAILED = []
@@ -33,7 +33,7 @@ check("kind.ms", is_enterprise("ms"), True)
 check("kind.unknown", is_enterprise("zzz"), False)
 # derive_version's base_ref fallback applies to any enterprise repo
 check("dv.ms_baseref", derive_version("ms", "", "branch-4.1-sync-pr-9"), "4.1")
-check("dv.ms_label", derive_version("ms", "version:4.2.0-ee", "main"), "4.2.0-ee")
+check("dv.ms_label", derive_version("ms", "version:4.2.0-ee", "main"), "4.2.0")   # -ee stripped
 
 # --- parse_sync ---
 check("sync.simple", parse_sync("[Enhancement] Add statistics for RTRIM binary(sync #76698)"), [76698])
@@ -50,19 +50,35 @@ check("base.branch_syncpr", clean_base_ref("branch-4.1-sync-pr-76229"), "4.1")
 check("base.branch", clean_base_ref("branch-3.5"), "3.5")
 check("base.empty", clean_base_ref(""), "main")
 check("base.nonbranch", clean_base_ref("release-4.1"), "release-4.1")  # neither main nor branch-*: pass through
+# Mergify backport/copy branches must unwrap to their target branch, not leak the whole ref as a version
+check("base.mergify_bp_branch", clean_base_ref("mergify/bp/branch-4.0/pr-51951"), "4.0")
+check("base.mergify_bp_main", clean_base_ref("mergify/bp/main/pr-123"), "main")
+check("base.mergify_copy_branch", clean_base_ref("mergify/copy/branch-3.5/pr-999"), "3.5")
+check("base.mergify_bp_cc", clean_base_ref("mergify/bp/branch-4.0-cc/pr-1"), "4.0-cc")
 
-# --- infer_version (regression + -ee) ---
+# --- infer_version (raw extractor: keeps -ee; normalize_version strips it downstream) ---
 check("ver.oss", infer_version("automerge,version:4.1.1"), "4.1.1")
 check("ver.ee", infer_version("automerge,version:3.5.21-ee"), "3.5.21-ee")
 check("ver.none", infer_version("automerge,sr"), "main")
 
+# --- normalize_version: drop -ee/-cc to unify version granularity ---
+check("nv.ee", normalize_version("4.1.4-ee"), "4.1.4")
+check("nv.cc", normalize_version("3.5-cc"), "3.5")
+check("nv.plain", normalize_version("4.1.4"), "4.1.4")
+check("nv.main", normalize_version("main"), "main")
+check("nv.nonrelease", normalize_version("release-4.1"), "release-4.1")
+check("nv.combined", normalize_version("4.0-ee-cc"), "4.0")
+check("nv.empty", normalize_version(""), "main")
+
 # --- derive_version ---
-check("dv.cd_label", derive_version("cd", "version:4.1.4-ee", "branch-4.1"), "4.1.4-ee")
+check("dv.cd_label", derive_version("cd", "version:4.1.4-ee", "branch-4.1"), "4.1.4")   # -ee stripped
 check("dv.cd_baseref", derive_version("cd", "", "branch-4.1-sync-pr-76229"), "4.1")
+check("dv.cd_mergify_bp", derive_version("cd", "", "mergify/bp/branch-4.0/pr-51951"), "4.0")  # was leaking full ref as version
+check("dv.cd_mergify_label_wins", derive_version("cd", "version:4.0.3-ee", "mergify/bp/branch-4.0/pr-51951"), "4.0.3")   # -ee stripped
 check("dv.cd_main", derive_version("cd", "", "main"), "main")
 check("dv.oss_main", derive_version("oss", "", "main"), "main")
 check("dv.oss_baseref_fallback", derive_version("oss", "", "branch-3.5"), "3.5")   # oss also falls back to base branch
-check("dv.oss_unlabeled_cc_branch", derive_version("oss", "", "branch-3.5-cc"), "3.5-cc")  # was silently dropped as 'main'
+check("dv.oss_unlabeled_cc_branch", derive_version("oss", "", "branch-3.5-cc"), "3.5")  # -cc stripped+unified; was dropped as 'main' before the base_ref fallback
 check("dv.oss_label_wins", derive_version("oss", "version:3.5.19", "branch-3.5"), "3.5.19")
 
 # --- classify_ent_pr: (pr_kind, sync_source_pr) ---
