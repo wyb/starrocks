@@ -882,12 +882,15 @@ def _collect_raw_files(args) -> list[Path]:
 
 
 def _row_skip_kind(row: dict) -> str | None:
-    """Return 'sync'/'backport' if this raw row must not be enriched, else None.
-    Old raw files (no pr_kind) fall back to title-based backport detection."""
+    """Return the pr_kind if this raw row must NOT be enriched, else None. sync/backport are
+    pure mapping/version rows; conflict_fix is a mechanical sync-conflict-resolution PR (its
+    change_type is SyncFix) with no standalone semantic value and no mapping contribution — it
+    stays recorded in raw but is kept out of enriched/pr_data. Old raw files (no pr_kind) fall
+    back to title-based backport detection."""
     kind = row.get("pr_kind")
     if kind is None:
         kind = "backport" if parse_backport(row.get("title", "")) else "exclusive"
-    return kind if kind in ("sync", "backport") else None
+    return kind if kind in ("sync", "backport", "conflict_fix") else None
 
 
 def _enrich_file(file_path: Path, output: Path = None):
@@ -902,25 +905,35 @@ def _enrich_file(file_path: Path, output: Path = None):
     enriched_dir.mkdir(parents=True, exist_ok=True)
     out_file = output or enriched_dir / file_path.name.replace("pr_raw_", "pr_enriched_")
 
-    # Load existing enriched file for resume support
+    # Load existing enriched file for resume support. Drop any conflict_fix/SyncFix rows on the
+    # way in: these are no longer enriched, so a file written before that change may still carry
+    # them — filtering here keeps them out of the rewritten output (and forces a fresh re-enrich
+    # if such a PR was later reclassified to an enrichable kind). purged_syncfix also forces the
+    # final write below, so the removal persists even when the raw file has no enrichable rows.
     existing = {}
+    purged_syncfix = 0
     if out_file.exists():
         with open(out_file) as f:
             for r in json.load(f):
+                if r.get("pr_kind") == "conflict_fix" or r.get("change_type") == "SyncFix":
+                    purged_syncfix += 1
+                    continue
                 existing[r["pr_number"]] = r
 
     enriched_rows = []
     pending_rows = []
     total = len(raw_rows)
-    skip_backport = 0
+    skipped = 0
     for i, row in enumerate(raw_rows):
         pr_num = row["pr_number"]
 
-        # Skip sync/backport PRs (they only contribute mapping/version info)
+        # Skip sync/backport/conflict_fix PRs: sync/backport only carry mapping/version info, and
+        # conflict_fix is a mechanical sync-conflict-resolution PR (SyncFix) with no standalone
+        # value. All stay in raw but are kept out of enriched/pr_data.
         skip_kind = _row_skip_kind(row)
         if skip_kind:
             print(f"  [{i+1}/{total}] PR #{pr_num}: skip {skip_kind} - {row['title'][:80]}")
-            skip_backport += 1
+            skipped += 1
             continue
 
         # Already enriched with the current schema: keep the expensive summary/embedding from
@@ -968,17 +981,19 @@ def _enrich_file(file_path: Path, output: Path = None):
             json.dump(enriched_rows, f, ensure_ascii=False, indent=2)
 
     # When there were no pending batches (every kept row was already enriched) the per-batch save
-    # above never ran, yet the reused rows may have had their metadata refreshed from raw — so
-    # write them back here. If batches did run, the last per-batch save already persisted the full
-    # set, so skip the redundant (large, embedding-heavy) rewrite. Guarded on non-empty so a raw
-    # file that is now entirely sync/backport never blanks an existing enriched file.
-    if not batches and enriched_rows:
+    # above never ran, yet reused rows may have had metadata refreshed from raw, or stale SyncFix
+    # rows may have been purged from the existing file — either way write it back here. If batches
+    # ran, the last per-batch save already persisted the full set, so skip the redundant (large,
+    # embedding-heavy) rewrite. The `enriched_rows or purged_syncfix` guard still stops a
+    # spuriously empty/all-skip raw (with nothing to purge) from blanking a good enriched file.
+    if not batches and (enriched_rows or purged_syncfix):
         with open(out_file, "w") as f:
             json.dump(enriched_rows, f, ensure_ascii=False, indent=2)
 
-    reused = total - new_count - skip_backport
-    print(f"  {out_file.name}: enriched {new_count}, skipped backport {skip_backport}, "
-          f"reused {reused} (summary/embedding kept, metadata refreshed)")
+    reused = total - new_count - skipped
+    print(f"  {out_file.name}: enriched {new_count}, skipped {skipped} (sync/backport/conflict_fix), "
+          f"reused {reused} (summary/embedding kept, metadata refreshed)"
+          + (f", purged {purged_syncfix} stale SyncFix from existing" if purged_syncfix else ""))
     return new_count
 
 

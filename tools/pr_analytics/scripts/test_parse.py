@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pr import (REPOS, parse_sync, clean_base_ref, infer_version, normalize_version,
-                derive_version, classify_ent_pr, parse_backport, is_enterprise)
+                derive_version, classify_ent_pr, parse_backport, is_enterprise, _row_skip_kind)
 
 FAILED = []
 TOTAL = 0
@@ -118,6 +118,14 @@ check("cls.exclusive_sync_word_in_title",
 check("cls.conflict_beats_sync_label",  # conflict base_ref outranks a bare 'sync' label
       classify_ent_pr("internal fix", "sync,main", "branch-4.1-sync-pr-999"),
       ("conflict_fix", None))
+
+# --- _row_skip_kind: rows kept out of enrich (sync/backport/conflict_fix stay in raw only) ---
+check("skip.sync", _row_skip_kind({"pr_kind": "sync"}), "sync")
+check("skip.backport", _row_skip_kind({"pr_kind": "backport"}), "backport")
+check("skip.conflict_fix", _row_skip_kind({"pr_kind": "conflict_fix"}), "conflict_fix")
+check("skip.exclusive_none", _row_skip_kind({"pr_kind": "exclusive"}), None)
+check("skip.legacy_backport", _row_skip_kind({"title": "x (backport #1)"}), "backport")  # no pr_kind
+check("skip.legacy_plain_none", _row_skip_kind({"title": "add feature"}), None)
 
 # --- parse_backport regression ---
 check("bp.basic", parse_backport("[BugFix] xxx (backport #71082)"), [71082])

@@ -18,7 +18,7 @@ Web UI ← 语义搜索 / searchable_text 关键词过滤 ← StarRocks (Primary
 - **多仓库（oss + 企业）**：`pr.py` 内置 `REPOS` 注册表，每条带 `kind`（`oss`/`enterprise`）、`label`、`active`，其中 `kind` 驱动所有「企业 vs 开源」分支逻辑，所以换/加源仓库是改配置而非改代码。当前三个：`oss` → `StarRocks/starrocks`；`cd` → `CelerData/celerdata-enterprise`（**当前企业源**——daemon 轮询）；`ms` → `MirrorShipDB/mirrorship-enterprise`（**尚未启用**——切换后才会有 PR，暂不轮询，但已可分析历史/回填）。各仓库数据分目录（`data/<repo>/raw|enriched`，oss 沿用旧 `data/raw`）。`pr_data`/`pr_versions` 以 `(pr_number, repo)`（`pr_versions` 再加 `version`）为联合主键——各仓 PR 号区间重叠，联合主键避免互相覆盖；检索默认联合全部仓库，也可用 `--repo` / `repo=` 限定单仓库（`oss`/`cd`/`ms`/`all`）。
 - **企业 PR 四分类**：fetch 阶段按标题 / 标签 / base 分支给每条企业 PR 打标（写入 raw JSON 的 `pr_kind` 字段），决定它进入哪条链路：
   - `sync`（约 90%，标题含 `(sync #N)` 或带 `sync` 标签）：从开源同步落地的 PR。不进 `pr_data`、不生成摘要，只由 `link-sync` 写入 `pr_sync(oss_pr, ent_pr, ent_repo, version, ent_merged_at)` 映射表（`ent_repo` 区分同步落到哪个企业仓库）。
-  - `conflict_fix`（base 分支形如 `*-sync-pr-<N>`，或标题匹配冲突解决模式）：同步时人工解决冲突产生的 PR，照常 enrich，但 `change_type` 被强制标记为 `SyncFix`。
+  - `conflict_fix`（base 分支形如 `*-sync-pr-<N>`，或标题匹配冲突解决模式）：同步时人工解决冲突产生的 PR，`change_type` 在 raw 中标记为 `SyncFix`；与 `sync`/`backport` 一样**跳过 enrich、不进 `pr_data`**（机械性解冲突，无独立语义、无映射贡献）。
   - `backport`（企业内部 `(backport #E)`）：向 `-ee` 发布分支的内部回合，跳过 enrich，由 `link-backport --repo ms` 写入 `pr_versions`。
   - `exclusive`（其余情况）：企业独有 PR，正常走摘要 + embedding 流程。
 
@@ -314,7 +314,7 @@ tail -f daemon.log
 | `deletions` | 删除行数 |
 | `changed_files` | 变更文件数 |
 | `module` | 模块: FE / BE / Docs / Test / Tool |
-| `change_type` | 变更类型: BugFix / Feature / Enhancement / Refactor / UT / Doc / Tool / SyncFix（企业仓库 `conflict_fix` 分类强制打此标签） |
+| `change_type` | 变更类型: BugFix / Feature / Enhancement / Refactor / UT / Doc / Tool。（`conflict_fix` 在 raw 标记 `SyncFix`，但跳过 enrich，故 `SyncFix` 不出现在 `pr_data`） |
 | `version` | 版本 (从 labels 解析, 默认 main；企业仓库无 label 时从 base_ref 派生分支粒度版本) |
 | `ai_summary` | AI 中文摘要 (展示用) |
 | `ai_summary_en` | AI 英文摘要 |
