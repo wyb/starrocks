@@ -22,6 +22,9 @@ import sys
 import os
 from datetime import datetime
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pr import ACTIVE_REPOS  # repos to poll each cycle (frozen repos are excluded)
+
 # 检查频率（秒）：1小时 = 3600秒
 INTERVAL = 3600
 
@@ -32,19 +35,18 @@ def run_pipeline():
     print(f"{'='*60}\n", flush=True)
 
     try:
-        # 使用当前 Python 解释器运行同目录下的 pr.py
-        # --days 2 足够覆盖每小时的增量数据，fetch 步骤会自动去重
-        result = subprocess.run(
-            [sys.executable, "pr.py", "pipeline", "--days", "2"],
-            check=False,
-            text=True
-        )
-
-        finish_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if result.returncode == 0:
-            print(f"\n[{finish_now}] Pipeline finished successfully.", flush=True)
-        else:
-            print(f"\n[{finish_now}] Pipeline failed with return code {result.returncode}.", flush=True)
+        for repo in ACTIVE_REPOS:
+            print(f"\n--- pipeline --repo {repo} ---", flush=True)
+            result = subprocess.run(
+                [sys.executable, "pr.py", "pipeline", "--repo", repo, "--days", "2"],
+                check=False,
+                text=True
+            )
+            finish_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if result.returncode == 0:
+                print(f"\n[{finish_now}] Pipeline ({repo}) finished successfully.", flush=True)
+            else:
+                print(f"\n[{finish_now}] Pipeline ({repo}) failed with return code {result.returncode}.", flush=True)
 
     except Exception as e:
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Unexpected error: {e}", flush=True)

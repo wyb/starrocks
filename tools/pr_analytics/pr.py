@@ -10,31 +10,34 @@ Prerequisites:
     pip install pymysql        # StarRocks 连接
 
 Usage:
-    # 常用：一键跑通全流程 (fetch + enrich + load + link-backport)
+    # 多数子命令支持 --repo oss|cd|ms (默认 oss)；link-sync 仅企业仓库 cd|ms；init-table/migrate-repo 不分 repo；search 支持 oss|cd|ms|all (默认 all 联合检索)
+
+    # 常用：一键跑通全流程 (fetch + enrich + load + link-backport；企业仓库 --repo cd|ms 额外含 link-sync)
     python3 pr.py pipeline --days 1
-    python3 pr.py pipeline --since 2025-04-01 --until 2025-04-30
+    python3 pr.py pipeline --repo ms --since 2025-04-01 --until 2025-04-30
 
-    # Step 1: 拉取 PR 原始数据 (按天存储, 按周分批, 增量去重)
+    # Step 1: 拉取 PR 原始数据 (按天存储, 按周分批, 增量去重；企业仓库自动分类打标)
     python3 pr.py fetch --days 1
-    python3 pr.py fetch --since 2025-04-01 --until 2025-04-30
+    python3 pr.py fetch --repo ms --since 2025-04-01 --until 2025-04-30
 
-    # Step 2: AI 增强 (生成摘要 + embedding, 断点续跑, 自动跳过 backport PR)
+    # Step 2: AI 增强 (生成摘要 + embedding, 断点续跑, 自动跳过 sync/backport PR)
     python3 pr.py enrich --file data/raw/pr_raw_20250401.json
     python3 pr.py enrich --since 2025-04-01 --until 2025-04-30
-    python3 pr.py enrich --since 2025-04-01 --until 2025-04-30 --reverse
 
-    # Step 3: 建表 (pr_data + pr_versions, 支持 --force 强制重建)
+    # Step 3: 建表 (pr_data + pr_versions + pr_sync, 支持 --force 强制重建)
     python3 pr.py init-table
-    python3 pr.py init-table --force
+    # 迁移旧库到 repo 感知 schema (给 pr_data/pr_versions 加 repo 列 + 建 pr_sync, 一次性幂等)
+    python3 pr.py migrate-repo
 
     # Step 4: 导入 StarRocks (重复导入自动更新, 同时写入 pr_versions 主版本)
     python3 pr.py load --file data/enriched/pr_enriched_20250401.json
     python3 pr.py load --since 2025-04-01 --until 2025-04-30
 
-    # Step 5: 关联 backport 版本 (扫描 raw 文件, 写入 pr_versions)
+    # Step 5: 关联版本映射 (link-backport 写 pr_versions；link-sync 写 pr_sync, 仅企业仓库)
     python3 pr.py link-backport --since 2025-04-01 --until 2025-04-30
+    python3 pr.py link-sync --repo ms --since 2025-04-01 --until 2025-04-30
 
-    # Step 6: 语义搜索
+    # Step 6: 语义搜索 (--repo oss|cd|ms|all, 默认 all)
     python3 pr.py search "内存泄漏"
     python3 pr.py search "物化视图刷新" --top 5
 """
@@ -66,12 +69,14 @@ SR_DB = "pr_analytics"
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "localhost")
 OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "300"))  # per ollama HTTP call
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "qwen3.5:9b")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))  # bge-m3 = 1024
 PR_SUMMARY_PROVIDER = os.getenv("PR_SUMMARY_PROVIDER", "codex").lower()
 PR_SUMMARY_BATCH_SIZE = int(os.getenv("PR_SUMMARY_BATCH_SIZE", "5"))
 PR_SUMMARY_TIMEOUT = int(os.getenv("PR_SUMMARY_TIMEOUT", "900"))
+GH_FETCH_TIMEOUT = int(os.getenv("GH_FETCH_TIMEOUT", "300"))  # per gh-batch wall clock; gh has no HTTP deadline
 PR_SUMMARY_BATCH_SLEEP = int(os.getenv("PR_SUMMARY_BATCH_SLEEP", "30"))
 PR_SUMMARY_RETRIES = int(os.getenv("PR_SUMMARY_RETRIES", "2"))
 PR_SUMMARY_RETRY_SLEEP = int(os.getenv("PR_SUMMARY_RETRY_SLEEP", "30"))
@@ -81,14 +86,66 @@ GEMINI_BIN = os.getenv("GEMINI_BIN", "gemini")
 CODEX_MODEL = os.getenv("CODEX_MODEL", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "")
 
-REPO = "StarRocks/starrocks"
-RAW_DIR = Path(__file__).parent / "data" / "raw"
-ENRICHED_DIR = Path(__file__).parent / "data" / "enriched"
+DATA_DIR = Path(__file__).parent / "data"
+# Repo registry. `kind` drives all enterprise-vs-oss behavior (classification,
+# sync mapping, migration guard) so adding a new source repo is config-only.
+# `cd` = CelerData history (frozen); `ms` = MirrorShip, the current enterprise source.
+REPOS = {
+    "oss": {
+        "slug": "StarRocks/starrocks",
+        "kind": "oss",
+        "label": "OSS",
+        "active": True,
+        "raw_dir": DATA_DIR / "raw",             # 现有目录不动，向后兼容
+        "enriched_dir": DATA_DIR / "enriched",
+    },
+    "cd": {
+        "slug": "CelerData/celerdata-enterprise",
+        "kind": "enterprise",
+        "label": "CD",
+        "active": False,   # frozen history: enterprise source moved to ms; daemon skips
+        "raw_dir": DATA_DIR / "cd" / "raw",
+        "enriched_dir": DATA_DIR / "cd" / "enriched",
+    },
+    "ms": {
+        "slug": "MirrorShipDB/mirrorship-enterprise",
+        "kind": "enterprise",
+        "label": "MS",
+        "active": True,
+        "raw_dir": DATA_DIR / "ms" / "raw",
+        "enriched_dir": DATA_DIR / "ms" / "enriched",
+    },
+}
+
+
+def is_enterprise(repo: str) -> bool:
+    """True for any enterprise-kind repo (celerdata, mirrorship, ...)."""
+    return REPOS.get(repo, {}).get("kind") == "enterprise"
+
+
+def _assert_known_repo(repo: str, ctx: str):
+    """Fail closed on an unrecognized repo code (e.g. stale data from before a repo-code
+    rename). Otherwise `is_enterprise` returns False (bypassing the migration guard),
+    `REPOS[repo]` KeyErrors, or a wrong-repo GitHub link gets rendered for the row."""
+    if repo not in REPOS:
+        raise RuntimeError(
+            f"Unknown repo code {repo!r} in {ctx} — valid codes are {list(REPOS)}. "
+            "Likely stale data from before a repo-code rename; re-fetch or remove the file.")
+
+
+ENTERPRISE_REPOS = [r for r, m in REPOS.items() if m.get("kind") == "enterprise"]
+ACTIVE_REPOS = [r for r, m in REPOS.items() if m.get("active", True)]  # repos the daemon polls
+REPO_CHOICES = list(REPOS.keys())            # --repo for fetch/enrich/load/link-backport/pipeline
+
+# Backward-compat aliases (oss defaults)
+REPO = REPOS["oss"]["slug"]
+RAW_DIR = REPOS["oss"]["raw_dir"]
+ENRICHED_DIR = REPOS["oss"]["enriched_dir"]
 
 
 # --- GitHub Data Fetching ---
 
-def _fetch_prs_batch(since: str, until: str) -> list[dict]:
+def _fetch_prs_batch(repo: str, since: str, until: str) -> list[dict]:
     """Fetch a single batch of PRs for a date range."""
     # GitHub search uses UTC; shift -8h to compensate for UTC+8 timezone
     utc_since = (datetime.strptime(since, "%Y-%m-%d") - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S")
@@ -96,26 +153,39 @@ def _fetch_prs_batch(since: str, until: str) -> list[dict]:
     date_range = f"merged:{utc_since}..{utc_until}"
     cmd = [
         "gh", "pr", "list",
-        "--repo", REPO,
+        "--repo", REPOS[repo]["slug"],
         "--state", "merged",
         "--limit", "1000",
         "--search", date_range,
         "--json", "number,title,body,labels,author,mergedAt,createdAt,"
-                  "additions,deletions,changedFiles,files",
+                  "additions,deletions,changedFiles,files,baseRefName",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=GH_FETCH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # gh has no HTTP deadline; without this an hourly daemon can freeze forever on a
+        # stalled connection/proxy. Treat as a batch failure (warn + skip) like a gh error.
+        print(f"  Warning: gh timed out for {since}..{until} after {GH_FETCH_TIMEOUT}s")
+        return []
     if result.returncode != 0:
         print(f"  Warning: gh failed for {since}..{until}: {result.stderr.strip()}")
         return []
-    prs = json.loads(result.stdout)
-    return prs
+    return json.loads(result.stdout)
 
 
-def fetch_prs(since: str, until: str = None) -> list[dict]:
+def _warn_if_capped(label: str, prs: list):
+    """Warn when a single-day fetch hits the 1000-row GitHub search cap — one day is the
+    finest granularity we split to, so results for that day may be silently truncated."""
+    if len(prs) >= 1000:
+        print(f"\n  WARNING: {label} returned {len(prs)} PRs at the GitHub search 1000-row cap; "
+              f"results for this day may be TRUNCATED (cannot split finer than one day).", end=" ")
+
+
+def fetch_prs(repo: str, since: str, until: str = None) -> list[dict]:
     """Fetch PRs, splitting into weekly batches to avoid GitHub API limits."""
     start = datetime.strptime(since, "%Y-%m-%d")
     end = datetime.strptime(until, "%Y-%m-%d") if until else datetime.now()
-    print(f"Fetching PRs merged {since} .. {end.strftime('%Y-%m-%d')} ...")
+    print(f"Fetching {REPOS[repo]['slug']} PRs merged {since} .. {end.strftime('%Y-%m-%d')} ...")
 
     all_prs = []
     seen = set()
@@ -125,7 +195,21 @@ def fetch_prs(since: str, until: str = None) -> list[dict]:
         s = batch_start.strftime("%Y-%m-%d")
         e = batch_end.strftime("%Y-%m-%d")
         print(f"  Batch {s} .. {e} ...", end=" ")
-        prs = _fetch_prs_batch(s, e)
+        prs = _fetch_prs_batch(repo, s, e)
+        if len(prs) >= 1000 and s != e:
+            # GitHub search caps at 1000: suspected truncation, re-fetch per day
+            print("hit 1000-row cap, splitting per day ...", end=" ")
+            prs = []
+            d = batch_start
+            while d <= batch_end:
+                ds = d.strftime("%Y-%m-%d")
+                day_prs = _fetch_prs_batch(repo, ds, ds)
+                _warn_if_capped(ds, day_prs)
+                prs.extend(day_prs)
+                d += timedelta(days=1)
+        elif len(prs) >= 1000:
+            # Single-day batch already at finest granularity — cannot split further
+            _warn_if_capped(s, prs)
         new_count = 0
         for pr in prs:
             if pr["number"] not in seen:
@@ -187,9 +271,63 @@ def parse_backport(title: str) -> list[int]:
     return [int(m) for m in re.findall(r"\(backport\s+#(\d+)\)", title, re.IGNORECASE)]
 
 
+SYNC_RE = re.compile(r"\(sync\s+#(\d+)\)", re.IGNORECASE)
+CONFLICT_TITLE_RE = re.compile(
+    r"^fix conflict|resolve committed merge conflict|resolve .*sync conflict",
+    re.IGNORECASE)
+SYNC_BRANCH_RE = re.compile(r"sync-pr-\d+$")
+
+
+def parse_sync(title: str) -> list[int]:
+    """Extract OSS source PR numbers from '(sync #N)' markers."""
+    return [int(m) for m in SYNC_RE.findall(title or "")]
+
+
+def clean_base_ref(base_ref: str) -> str:
+    """Derive branch-granularity version from a base ref.
+    main-sync-pr-76688 -> main; branch-4.1-sync-pr-76229 -> 4.1; branch-3.5 -> 3.5."""
+    b = re.sub(r"-sync-pr-\d+$", "", base_ref or "")
+    if not b or b == "main":
+        return "main"
+    m = re.match(r"branch-(.+)$", b)
+    if m:
+        return m.group(1)
+    return b
+
+
+def derive_version(repo: str, labels: str, base_ref: str) -> str:
+    """version:x.y.z(-ee) label first; otherwise fall back to the base branch — for ANY repo.
+    Without the base_ref fallback for oss too, a backport merged into an unlabeled release
+    branch (e.g. branch-3.5-cc, which never gets a version: label) derives "main" and is then
+    silently dropped by link-backport; the fallback gives it a branch-granularity version.
+    Clamped to 64 chars to fit the version VARCHAR(64) column. (repo kept for call-site clarity.)"""
+    v = infer_version(labels)
+    if v != "main":
+        return v[:64]
+    return clean_base_ref(base_ref)[:64]
+
+
+def classify_ent_pr(title: str, labels: str, base_ref: str) -> tuple[str, int | None]:
+    """Classify an enterprise PR. Returns (pr_kind, sync_source_pr).
+    Priority: sync-by-title > conflict_fix > sync-by-label > backport > exclusive.
+    The conflict_fix base_ref signal (`*-sync-pr-N`) / conflict title is definitive and
+    outranks a bare `sync` label, so a conflict-resolution PR that also happens to carry a
+    `sync` label is not swallowed as sync (and thus still gets enriched as SyncFix)."""
+    sync_srcs = parse_sync(title)
+    if sync_srcs:
+        return "sync", sync_srcs[0]
+    if SYNC_BRANCH_RE.search(base_ref or "") or CONFLICT_TITLE_RE.search(title or ""):
+        return "conflict_fix", None
+    if "sync" in (labels or "").split(","):
+        return "sync", None  # label-only sync (no title marker, not a conflict branch)
+    if parse_backport(title or ""):
+        return "backport", None
+    return "exclusive", None
+
+
 def infer_version(labels: str) -> str:
     """Extract version from labels like 'version:4.1.1'."""
-    m = re.search(r"version[:\s]*([\d]+\.[\d]+(?:\.[\d]+)?)", labels)
+    m = re.search(r"version[:\s]*([\d]+\.[\d]+(?:\.[\d]+)?(?:-ee)?)", labels)
     if m:
         return m.group(1)
     return "main"
@@ -226,7 +364,7 @@ def infer_module(pr: dict) -> str:
 
 # --- Ollama: Summary + Embedding ---
 
-def _ollama_post(path: str, body: dict, timeout: int = 120) -> dict:
+def _ollama_post(path: str, body: dict, timeout: int = OLLAMA_TIMEOUT) -> dict:
     """Call Ollama API via http.client (bypasses proxy entirely)."""
     conn = http.client.HTTPConnection(OLLAMA_HOST, OLLAMA_PORT, timeout=timeout)
     payload = json.dumps(body)
@@ -385,7 +523,28 @@ def _cleanup_prjson_tmp_dirs(before: set[Path], pr_numbers: list[int]):
             print(f"    Warning: failed to remove temporary directory {path}: {e}")
 
 
-def _run_summarizer_json(cmd: list[str], provider: str, nums: str, pr_numbers: list[int], out: Path = None) -> list[dict]:
+def _finalize_summaries(rows: list[dict], items: list[dict]) -> dict[int, dict]:
+    """Map summarizer items back to their rows and normalize. Raises RuntimeError (which the
+    caller's retry loop catches) on any content-level mismatch — a renumbered/hallucinated
+    pr_number, an unrequested PR, a missing PR, or an item missing required summary fields —
+    so these non-deterministic LLM failure modes get retried instead of raising uncaught."""
+    rows_by_pr = {int(r["pr_number"]): r for r in rows}
+    result = {}
+    for item in items:
+        try:
+            pn = int(item["pr_number"])
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError(f"Summarizer item has missing/invalid pr_number: {str(item)[:200]}")
+        if pn not in rows_by_pr:
+            raise RuntimeError(f"Summarizer returned unrequested PR #{pn} (batch was {sorted(rows_by_pr)})")
+        result[pn] = _normalize_summary_item(rows_by_pr[pn], item)
+    missing = sorted(set(rows_by_pr) - set(result))
+    if missing:
+        raise RuntimeError(f"Summarizer did not return PR(s) {missing}")
+    return result
+
+
+def _run_summarizer_json(cmd: list[str], provider: str, nums: str, pr_numbers: list[int], out: Path = None, finalize=None):
     attempts = PR_SUMMARY_RETRIES + 1
     last_error = None
     tmp_dirs_before = _snapshot_prjson_tmp_dirs()
@@ -400,8 +559,6 @@ def _run_summarizer_json(cmd: list[str], provider: str, nums: str, pr_numbers: l
                 text = out.read_text() if out is not None else result.stdout
                 try:
                     data = _load_summary_json(text)
-                    _cleanup_prjson_tmp_dirs(tmp_dirs_before, pr_numbers)
-                    return data
                 except json.JSONDecodeError as e:
                     bad_file = None
                     if out is not None:
@@ -411,6 +568,11 @@ def _run_summarizer_json(cmd: list[str], provider: str, nums: str, pr_numbers: l
                     if bad_file is not None:
                         msg += f" (saved to {bad_file})"
                     raise RuntimeError(msg)
+                # content validation runs INSIDE the retry loop: a renumbered/missing/incomplete
+                # item raises RuntimeError here and is retried, not raised uncaught after the loop.
+                out_val = finalize(data) if finalize else data
+                _cleanup_prjson_tmp_dirs(tmp_dirs_before, pr_numbers)
+                return out_val
 
             stderr = result.stderr.strip()
             stdout = result.stdout.strip()
@@ -454,10 +616,20 @@ def _summarize_batch_ollama(rows: list[dict], batch_index: int = None, batch_tot
     return result
 
 
+def _pr_refs(rows: list[dict]) -> str:
+    """PR references for the summarizer prompt: bare numbers for oss, full URLs for enterprise repos."""
+    repo = rows[0].get("repo", "oss")
+    if repo == "oss":
+        return ",".join(str(int(r["pr_number"])) for r in rows)
+    slug = REPOS[repo]["slug"]
+    return ",".join(f"https://github.com/{slug}/pull/{int(r['pr_number'])}" for r in rows)
+
+
 def _summarize_batch_codex(rows: list[dict], batch_index: int = None, batch_total: int = None) -> dict[int, dict]:
     pr_numbers = [int(r["pr_number"]) for r in rows]
     nums = ",".join(str(n) for n in pr_numbers)
-    prompt = f"用 pr-json-summarizer 分析 pr {nums}"
+    refs = _pr_refs(rows)
+    prompt = f"用 pr-json-summarizer 分析 pr {refs}"
     out = Path(tempfile.gettempdir()) / f"pr_summary_codex_{os.getpid()}_{pr_numbers[0]}_{pr_numbers[-1]}.json"
     cmd = [
         CODEX_BIN, "exec",
@@ -468,18 +640,15 @@ def _summarize_batch_codex(rows: list[dict], batch_index: int = None, batch_tota
         cmd.extend(["--model", CODEX_MODEL])
     cmd.append(prompt)
     print(f"    Summarizing PR batch with Codex{_format_batch_progress(batch_index, batch_total)}: {nums}")
-    items = _run_summarizer_json(cmd, "Codex", nums, pr_numbers, out)
-    rows_by_pr = {int(r["pr_number"]): r for r in rows}
-    return {
-        int(item["pr_number"]): _normalize_summary_item(rows_by_pr[int(item["pr_number"])], item)
-        for item in items
-    }
+    return _run_summarizer_json(cmd, "Codex", nums, pr_numbers, out,
+                                finalize=lambda data: _finalize_summaries(rows, data))
 
 
 def _summarize_batch_gemini(rows: list[dict], batch_index: int = None, batch_total: int = None) -> dict[int, dict]:
     pr_numbers = [int(r["pr_number"]) for r in rows]
     nums = ",".join(str(n) for n in pr_numbers)
-    prompt = f"用 pr-json-summarizer 分析 pr {nums}"
+    refs = _pr_refs(rows)
+    prompt = f"用 pr-json-summarizer 分析 pr {refs}"
     cmd = [
         GEMINI_BIN,
         "--approval-mode", "yolo",
@@ -489,12 +658,8 @@ def _summarize_batch_gemini(rows: list[dict], batch_index: int = None, batch_tot
         cmd.extend(["--model", GEMINI_MODEL])
     cmd.extend(["-p", prompt])
     print(f"    Summarizing PR batch with Gemini{_format_batch_progress(batch_index, batch_total)}: {nums}")
-    items = _run_summarizer_json(cmd, "Gemini", nums, pr_numbers)
-    rows_by_pr = {int(r["pr_number"]): r for r in rows}
-    return {
-        int(item["pr_number"]): _normalize_summary_item(rows_by_pr[int(item["pr_number"])], item)
-        for item in items
-    }
+    return _run_summarizer_json(cmd, "Gemini", nums, pr_numbers,
+                                finalize=lambda data: _finalize_summaries(rows, data))
 
 
 def summarize_pr_batch(rows: list[dict], batch_index: int = None, batch_total: int = None) -> dict[int, dict]:
@@ -528,25 +693,29 @@ def parse_dt(s: str | None) -> str | None:
 
 
 def cmd_pipeline(args):
-    """Execute full workflow: fetch → enrich → load → link-backport."""
+    """Execute full workflow: fetch → (link-sync for enterprise) → enrich → load → link-backport."""
     since = args.since or (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
     until = args.until or datetime.now().strftime("%Y-%m-%d")
 
     print(f">>> Starting Pipeline [{since} .. {until}] ...")
 
-    print("\n--- [1/4] Fetching raw PR data ---")
+    print("\n--- Fetching raw PR data ---")
     cmd_fetch(args)
 
-    print("\n--- [2/4] Generating AI summaries and embeddings (enrich) ---")
+    if is_enterprise(getattr(args, "repo", "oss")):
+        print("\n--- Linking sync mappings ---")
+        cmd_link_sync(args)
+
+    print("\n--- Generating AI summaries and embeddings (enrich) ---")
     # cmd_enrich needs file=None to use since/until logic
     args.file = None
     args.output = None
     cmd_enrich(args)
 
-    print("\n--- [3/4] Loading enriched data into StarRocks ---")
+    print("\n--- Loading enriched data into StarRocks ---")
     cmd_load(args)
 
-    print("\n--- [4/4] Linking backport versions ---")
+    print("\n--- Linking backport versions ---")
     cmd_link_backport(args)
 
     print(f"\n>>> Pipeline Completed Successfully [{since} .. {until}].")
@@ -555,42 +724,61 @@ def cmd_pipeline(args):
 
 def cmd_fetch(args):
     """Fetch raw PR data from GitHub and save to JSON file."""
+    repo = getattr(args, "repo", "oss")
     if args.since:
         since = args.since
     else:
         since = (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
-    prs = fetch_prs(since, args.until)
+    prs = fetch_prs(repo, since, args.until)
     if not prs:
         print("No PRs found.")
         return
-
     rows = []
+    kind_counter = {}
     for pr in prs:
         num = pr["number"]
         title = pr.get("title", "")
         body = pr.get("body") or ""
         author = (pr.get("author") or {}).get("login", "unknown")
         labels = ",".join(lb.get("name", "") for lb in (pr.get("labels") or []))
+        base_ref = pr.get("baseRefName") or ""
+
+        if is_enterprise(repo):
+            pr_kind, sync_source_pr = classify_ent_pr(title, labels, base_ref)
+            if pr_kind == "sync" and sync_source_pr is None:
+                print(f"  Warning: {repo.upper()} PR #{num} has 'sync' label but no '(sync #N)' in title; no mapping row")
+        else:
+            pr_kind = "backport" if parse_backport(title) else "exclusive"
+            sync_source_pr = None
+        kind_counter[pr_kind] = kind_counter.get(pr_kind, 0) + 1
+
+        change_type = "SyncFix" if pr_kind == "conflict_fix" else parse_change_type(title, body)
 
         row = {
             "pr_number": num,
+            "repo": repo,
             "title": title,
             "author": author,
             "labels": labels,
+            "base_ref": base_ref,
+            "pr_kind": pr_kind,
+            "sync_source_pr": sync_source_pr,
             "created_at": parse_dt(pr.get("createdAt")),
             "merged_at": parse_dt(pr.get("mergedAt")),
             "additions": pr.get("additions", 0),
             "deletions": pr.get("deletions", 0),
             "changed_files": len(pr.get("files") or []) or pr.get("changedFiles", 0),
             "module": infer_module(pr),
-            "change_type": parse_change_type(title, body),
-            "version": infer_version(labels),
+            "change_type": change_type,
+            "version": derive_version(repo, labels, base_ref),
             "body": body[:10000],
         }
         rows.append(row)
+    print(f"  Kind breakdown: {kind_counter}")
 
     # Group by merged date, one file per day
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    raw_dir = REPOS[repo]["raw_dir"]
+    raw_dir.mkdir(parents=True, exist_ok=True)
     by_date = {}
     for row in rows:
         merged = row.get("merged_at") or row.get("created_at") or ""
@@ -599,7 +787,7 @@ def cmd_fetch(args):
 
     total_saved = 0
     for date_key, day_rows in sorted(by_date.items()):
-        out_file = RAW_DIR / f"pr_raw_{date_key}.json"
+        out_file = raw_dir / f"pr_raw_{date_key}.json"
 
         # Append to existing file if it exists
         existing = []
@@ -638,10 +826,12 @@ def _date_range(since: str, until: str) -> list[str]:
 
 def _collect_raw_files(args) -> list[Path]:
     """Resolve raw JSON files from --file, --since/--until, or --days."""
+    raw_dir = REPOS[getattr(args, "repo", "oss")]["raw_dir"]
+
     if getattr(args, "file", None):
         file_path = Path(args.file)
         if not file_path.exists():
-            file_path = RAW_DIR / args.file
+            file_path = raw_dir / args.file
         if not file_path.exists():
             print(f"File not found: {args.file}")
             sys.exit(1)
@@ -659,15 +849,27 @@ def _collect_raw_files(args) -> list[Path]:
     dates = _date_range(since, until)
     files = []
     for d in dates:
-        f = RAW_DIR / f"pr_raw_{d}.json"
+        f = raw_dir / f"pr_raw_{d}.json"
         if f.exists():
             files.append(f)
         else:
             print(f"  Skipping {f.name} (not found)")
     if not files:
+        # No files in the window is a no-op, NOT an error: pipeline steps after this
+        # (enrich/load/link-backport/link-sync) must still run, and the daemon must not
+        # report failure just because a quiet window produced nothing.
         print(f"No raw files found in range [{since} .. {until}].")
-        sys.exit(1)
+        return []
     return files
+
+
+def _row_skip_kind(row: dict) -> str | None:
+    """Return 'sync'/'backport' if this raw row must not be enriched, else None.
+    Old raw files (no pr_kind) fall back to title-based backport detection."""
+    kind = row.get("pr_kind")
+    if kind is None:
+        kind = "backport" if parse_backport(row.get("title", "")) else "exclusive"
+    return kind if kind in ("sync", "backport") else None
 
 
 def _enrich_file(file_path: Path, output: Path = None):
@@ -676,9 +878,11 @@ def _enrich_file(file_path: Path, output: Path = None):
         raw_rows = json.load(f)
 
     # Output file: pr_raw_xxx.json → enriched/pr_enriched_xxx.json
-    ENRICHED_DIR.mkdir(parents=True, exist_ok=True)
-    out_file = output or \
-        ENRICHED_DIR / file_path.name.replace("pr_raw_", "pr_enriched_")
+    file_repo = raw_rows[0].get("repo", "oss") if raw_rows else "oss"
+    _assert_known_repo(file_repo, file_path.name)
+    enriched_dir = REPOS[file_repo]["enriched_dir"]
+    enriched_dir.mkdir(parents=True, exist_ok=True)
+    out_file = output or enriched_dir / file_path.name.replace("pr_raw_", "pr_enriched_")
 
     # Load existing enriched file for resume support
     existing = {}
@@ -694,9 +898,10 @@ def _enrich_file(file_path: Path, output: Path = None):
     for i, row in enumerate(raw_rows):
         pr_num = row["pr_number"]
 
-        # Skip backport PRs (they only contribute version info via link-backport)
-        if parse_backport(row.get("title", "")):
-            print(f"  [{i+1}/{total}] PR #{pr_num}: skip backport - {row['title'][:80]}")
+        # Skip sync/backport PRs (they only contribute mapping/version info)
+        skip_kind = _row_skip_kind(row)
+        if skip_kind:
+            print(f"  [{i+1}/{total}] PR #{pr_num}: skip {skip_kind} - {row['title'][:80]}")
             skip_backport += 1
             continue
 
@@ -764,29 +969,11 @@ def cmd_enrich(args):
 
 # --- Step 2: init table ---
 
-def cmd_init_table(args):
-    """Create database and table with vector index."""
-    print("Creating database and tables ...")
-    ddl = f"CREATE DATABASE IF NOT EXISTS {SR_DB}"
-    sr_execute_sql(ddl, database=None)
-
-    if not args.force:
-        # Check if table already exists
-        try:
-            rows = sr_query(f"SHOW TABLES LIKE 'pr_data'")
-            if rows:
-                print(f"Error: Table {SR_DB}.pr_data already exists. Use --force to drop and recreate.")
-                sys.exit(1)
-        except Exception:
-            pass  # Database may not exist yet, proceed
-
-    drop_data = "DROP TABLE IF EXISTS pr_data;" if args.force else ""
-    drop_versions = "DROP TABLE IF EXISTS pr_versions;" if args.force else ""
-    ddl = f"""
-{drop_data}
-
-CREATE TABLE pr_data (
+def _pr_data_ddl(table: str) -> str:
+    return f"""
+CREATE TABLE {table} (
     pr_number       INT            NOT NULL COMMENT 'PR编号',
+    repo            VARCHAR(16)    NOT NULL DEFAULT 'oss' COMMENT '仓库: oss/cd/ms',
     title           VARCHAR(65533) NOT NULL COMMENT '标题',
     author          VARCHAR(256)   COMMENT '作者',
     labels          VARCHAR(65533) COMMENT '标签',
@@ -797,7 +984,7 @@ CREATE TABLE pr_data (
     changed_files   INT            COMMENT '变更文件数',
     module          VARCHAR(64)    COMMENT '模块: FE/BE/Docs/Tool',
     change_type     VARCHAR(64)    COMMENT '变更类型',
-    version         VARCHAR(64)    NOT NULL DEFAULT 'main' COMMENT '版本: main/4.1.1/...',
+    version         VARCHAR(64)    NOT NULL DEFAULT 'main' COMMENT '版本: main/4.1.1/4.1.4-ee/...',
     ai_summary      VARCHAR(65533) COMMENT 'AI中文摘要',
     ai_summary_en   VARCHAR(65533) COMMENT 'AI英文摘要',
     diff_keywords   VARCHAR(65533) COMMENT '结构化检索关键词, 用于展示和诊断',
@@ -813,33 +1000,173 @@ CREATE TABLE pr_data (
     ),
     INDEX searchable_text_idx (searchable_text) USING GIN("parser" = "standard", "imp_lib" = "builtin")
 ) ENGINE = OLAP
-PRIMARY KEY(pr_number)
+PRIMARY KEY(pr_number, repo)
 DISTRIBUTED BY HASH(pr_number) BUCKETS 1
-PROPERTIES("replication_num" = "1");
+PROPERTIES("replication_num" = "1")
+"""
 
-{drop_versions}
 
-CREATE TABLE pr_versions (
+def _pr_versions_ddl(table: str) -> str:
+    return f"""
+CREATE TABLE {table} (
     pr_number     INT          NOT NULL COMMENT '主 PR 编号',
+    repo          VARCHAR(16)  NOT NULL DEFAULT 'oss' COMMENT '仓库: oss/cd/ms',
     version       VARCHAR(64)  NOT NULL COMMENT '版本',
     backport_pr   INT          COMMENT 'backport PR 编号, 主版本为 NULL'
 ) ENGINE = OLAP
-PRIMARY KEY(pr_number, version)
+PRIMARY KEY(pr_number, repo, version)
 DISTRIBUTED BY HASH(pr_number) BUCKETS 1
-PROPERTIES("replication_num" = "1");
+PROPERTIES("replication_num" = "1")
+"""
+
+
+def _pr_sync_ddl() -> str:
+    return """
+CREATE TABLE pr_sync (
+    oss_pr         INT          NOT NULL COMMENT '开源 PR 编号 (sync #N)',
+    ent_pr         INT          NOT NULL COMMENT '企业 PR 编号',
+    ent_repo       VARCHAR(16)  NOT NULL DEFAULT 'cd' COMMENT '企业仓库短码: cd/ms',
+    version        VARCHAR(64)  COMMENT '企业侧落点: main/X.Y/x.y.z-ee',
+    ent_merged_at  DATETIME     COMMENT '企业 PR 合并时间'
+) ENGINE = OLAP
+PRIMARY KEY(oss_pr, ent_pr, ent_repo)
+DISTRIBUTED BY HASH(oss_pr) BUCKETS 1
+PROPERTIES("replication_num" = "1")
+"""
+
+
+def _ensure_pr_sync_schema():
+    """Create pr_sync if missing; if it exists WITHOUT the ent_repo column
+    (pre-mirrorship schema), drop and recreate it — the mapping is re-derivable
+    via `link-sync`, so nothing is lost that a re-run cannot rebuild. ent_repo is
+    a primary-key column, so it cannot be added by ALTER."""
+    if not sr_query("SHOW TABLES LIKE 'pr_sync'"):
+        sr_execute_sql(_pr_sync_ddl())
+        print("  pr_sync created.")
+        return
+    cols = sr_query("DESC pr_sync")
+    if not any(c.get("Field") == "ent_repo" for c in cols):
+        print("  pr_sync lacks 'ent_repo' (pre-mirrorship schema) — dropping and recreating; "
+              "re-run `link-sync --repo cd` and `--repo ms` to repopulate.")
+        sr_execute_sql("DROP TABLE pr_sync; " + _pr_sync_ddl())
+
+
+def cmd_init_table(args):
+    """Create database and tables with vector index (schema v2: repo-aware)."""
+    print("Creating database and tables ...")
+    sr_execute_sql(f"CREATE DATABASE IF NOT EXISTS {SR_DB}", database=None)
+
+    if not args.force:
+        try:
+            if sr_query("SHOW TABLES LIKE 'pr_data'"):
+                print(f"Error: Table {SR_DB}.pr_data already exists. Use --force to drop and recreate.")
+                sys.exit(1)
+        except Exception:
+            pass  # Database may not exist yet, proceed
+
+    drops = "DROP TABLE IF EXISTS pr_data; DROP TABLE IF EXISTS pr_versions; DROP TABLE IF EXISTS pr_sync;" if args.force else ""
+    ddl = f"""
+{drops}
+{_pr_data_ddl("pr_data")};
+{_pr_versions_ddl("pr_versions")};
+{_pr_sync_ddl()};
 """
     sr_execute_sql(ddl)
-    print("  Done. Tables pr_analytics.pr_data and pr_analytics.pr_versions created.")
+    print("  Done. Tables pr_data, pr_versions, pr_sync created (repo-aware schema).")
+
+
+def _table_has_repo(table: str):
+    """True/False whether `table` has a 'repo' column; None if the table is missing."""
+    try:
+        cols = sr_query(f"DESC {table}")
+    except Exception:
+        return None
+    return any(c.get("Field") == "repo" for c in cols)
+
+
+def cmd_migrate_repo(args):
+    """One-shot migration: add repo dimension to pr_data/pr_versions, create pr_sync. Idempotent."""
+    d = _table_has_repo("pr_data")
+    v = _table_has_repo("pr_versions")
+    if d is True and v is True:
+        print("pr_data and pr_versions already migrated (have 'repo'); ensuring pr_sync schema ...")
+        _ensure_pr_sync_schema()
+        print("Nothing else to do.")
+        return
+    if d is None and v is None:
+        print("Error: neither pr_data nor pr_versions exists — run `python3 pr.py init-table` first.")
+        sys.exit(1)
+    if d is not False or v is not False:
+        # anything other than "both tables present and unmigrated" is a partial/inconsistent
+        # state — most likely a previous migrate-repo failed mid-rename (see Step 4).
+        print(f"Error: inconsistent migration state (pr_data repo-column={d}, "
+              f"pr_versions repo-column={v}; None = table missing). A previous migrate-repo may "
+              "have failed mid-rename. Inspect pr_data / pr_data_new / pr_data_bak (and the "
+              "pr_versions_* tables) and finish the rename by hand before re-running.")
+        sys.exit(1)
+    # d is False and v is False -> both present and unmigrated -> proceed
+
+    print("Step 1/4: creating pr_data_new / pr_versions_new ...")
+    sr_execute_sql(f"""
+DROP TABLE IF EXISTS pr_data_new;
+DROP TABLE IF EXISTS pr_versions_new;
+{_pr_data_ddl("pr_data_new")};
+{_pr_versions_ddl("pr_versions_new")};
+""")
+
+    print("Step 2/4: copying data (INSERT INTO ... SELECT, repo='oss') ...")
+    sr_execute_sql("""
+SET query_timeout = 1800;
+SET insert_timeout = 1800;
+INSERT INTO pr_data_new
+SELECT pr_number, 'oss', title, author, labels, created_at, merged_at,
+       additions, deletions, changed_files, module, change_type, version,
+       ai_summary, ai_summary_en, diff_keywords, searchable_text, body, embedding
+FROM pr_data;
+INSERT INTO pr_versions_new
+SELECT pr_number, 'oss', version, backport_pr FROM pr_versions;
+""")
+
+    print("Step 3/4: verifying row counts ...")
+    for old, new in (("pr_data", "pr_data_new"), ("pr_versions", "pr_versions_new")):
+        c_old = sr_query(f"SELECT COUNT(*) AS c FROM {old}")[0]["c"]
+        c_new = sr_query(f"SELECT COUNT(*) AS c FROM {new}")[0]["c"]
+        print(f"  {old}: {c_old} -> {new}: {c_new}")
+        if int(c_old) != int(c_new):
+            print(f"Error: row count mismatch for {old}, aborting before rename. Old tables untouched.")
+            sys.exit(1)
+
+    print("Step 4/4: swapping tables (old kept as *_bak) ...")
+    try:
+        sr_execute_sql("""
+ALTER TABLE pr_data RENAME pr_data_bak;
+ALTER TABLE pr_data_new RENAME pr_data;
+ALTER TABLE pr_versions RENAME pr_versions_bak;
+ALTER TABLE pr_versions_new RENAME pr_versions;
+""")
+    except Exception as e:
+        print(f"Error during table rename: {e}\n"
+              "Migration is PARTIAL — some renames may have applied. Finish the swap by hand "
+              "(skip any already done), then re-run migrate-repo to create pr_sync:\n"
+              "  ALTER TABLE pr_data RENAME pr_data_bak;\n"
+              "  ALTER TABLE pr_data_new RENAME pr_data;\n"
+              "  ALTER TABLE pr_versions RENAME pr_versions_bak;\n"
+              "  ALTER TABLE pr_versions_new RENAME pr_versions;")
+        sys.exit(1)
+    _ensure_pr_sync_schema()
+    print("Done. Backup tables pr_data_bak / pr_versions_bak kept; drop them manually after validation.")
 
 
 # --- Step 3: load JSON into StarRocks ---
 
 def _collect_enriched_files(args) -> list[Path]:
     """Resolve enriched JSON files from --file, --since/--until, or --days."""
+    enriched_dir = REPOS[getattr(args, "repo", "oss")]["enriched_dir"]
+
     if getattr(args, "file", None):
         file_path = Path(args.file)
         if not file_path.exists():
-            file_path = ENRICHED_DIR / args.file
+            file_path = enriched_dir / args.file
         if not file_path.exists():
             print(f"File not found: {args.file}")
             sys.exit(1)
@@ -857,23 +1184,38 @@ def _collect_enriched_files(args) -> list[Path]:
     dates = _date_range(since, until)
     files = []
     for d in dates:
-        f = ENRICHED_DIR / f"pr_enriched_{d}.json"
+        f = enriched_dir / f"pr_enriched_{d}.json"
         if f.exists():
             files.append(f)
         else:
             print(f"  Skipping {f.name} (not found)")
     if not files:
+        # No enriched files is a no-op (e.g. a window of only sync/backport PRs, which are
+        # never enriched): return empty so cmd_load skips loading but the pipeline continues
+        # to link-backport instead of dying here.
         print(f"No enriched files found in range [{since} .. {until}].")
-        sys.exit(1)
+        return []
     return files
 
 
-def load_versions(version_rows: list):
-    """Load version mappings into pr_versions via Stream Load."""
-    if not version_rows:
+def _assert_pr_data_migrated():
+    """Abort if pr_data lacks the repo column (pre-migration schema).
+    Loading enterprise rows into a single-column-PK pr_data would upsert-overwrite
+    same-numbered oss rows. Run `migrate-repo` first."""
+    cols = sr_query("DESC pr_data")
+    if not any(c.get("Field") == "repo" for c in cols):
+        raise RuntimeError(
+            "pr_data has no 'repo' column — database is pre-migration. "
+            "Run `python3 pr.py migrate-repo` before loading enterprise data.")
+
+
+def stream_load_json(table: str, rows: list[dict]):
+    """Stream Load a list of dicts into a table (upsert via primary key)."""
+    if not rows:
+        print(f"  No rows to load into {table}.")
         return
-    url = f"http://{SR_HOST}:{SR_HTTP_PORT}/api/{SR_DB}/pr_versions/_stream_load"
-    payload = json.dumps(version_rows)
+    url = f"http://{SR_HOST}:{SR_HTTP_PORT}/api/{SR_DB}/{table}/_stream_load"
+    payload = json.dumps(rows)
     auth = base64.b64encode(f"{SR_USER}:{SR_PASSWORD}".encode()).decode()
     cmd = [
         "curl", "-s", "-L", "--location-trusted",
@@ -890,13 +1232,29 @@ def load_versions(version_rows: list):
     ]
     result = subprocess.run(cmd, input=payload, capture_output=True, text=True)
     if result.returncode != 0 or not result.stdout.strip():
-        raise RuntimeError(f"Stream Load pr_versions failed: {result.stderr}")
+        raise RuntimeError(f"Stream Load {table} failed (rc={result.returncode}): {result.stderr}")
     resp = json.loads(result.stdout)
     status = resp.get("Status", "Unknown")
     loaded = resp.get("NumberLoadedRows", 0)
-    print(f"  Stream Load pr_versions: Status={status}, Loaded={loaded} rows.")
+    msg = resp.get("Message", "")
+    print(f"  Stream Load {table}: Status={status}, Loaded={loaded} rows. {msg}")
     if status not in ("Success", "Publish Timeout"):
         print(f"  Full response: {json.dumps(resp, indent=2)}")
+        raise RuntimeError(
+            f"Stream Load {table} did not succeed (Status={status}) — aborting so the failure "
+            f"is visible instead of silently dropping rows. {msg}")
+
+
+def load_versions(version_rows: list):
+    """Load version mappings into pr_versions via Stream Load."""
+    stream_load_json("pr_versions", version_rows)
+
+
+_PR_DATA_EXTRA_KEYS = ("base_ref", "pr_kind", "sync_source_pr")
+
+def _strip_extra_keys(rows: list[dict]) -> list[dict]:
+    """Drop raw-only fields that have no matching pr_data column."""
+    return [{k: v for k, v in r.items() if k not in _PR_DATA_EXTRA_KEYS} for r in rows]
 
 
 def cmd_load(args):
@@ -905,17 +1263,25 @@ def cmd_load(args):
 
     total_loaded = 0
     all_versions = []
+    checked_migrated = False
     for file_path in files:
         with open(file_path) as f:
             rows = json.load(f)
+        for r in rows:
+            r.setdefault("repo", "oss")  # old enriched files lack repo; pr_data.repo is NOT NULL
+            _assert_known_repo(r["repo"], file_path.name)
+        if not checked_migrated and any(is_enterprise(r.get("repo", "oss")) for r in rows):
+            _assert_pr_data_migrated()
+            checked_migrated = True
         print(f"Loading {len(rows)} rows from {file_path.name} ...")
-        load_to_starrocks(rows)
+        load_to_starrocks(_strip_extra_keys(rows))
         total_loaded += len(rows)
 
         # Collect version mappings (each PR gets its own version entry)
         for row in rows:
             all_versions.append({
                 "pr_number": row["pr_number"],
+                "repo": row.get("repo", "oss"),
                 "version": row.get("version", "main"),
                 "backport_pr": None,
             })
@@ -932,6 +1298,7 @@ def cmd_load(args):
 
 def cmd_link_backport(args):
     """Scan raw files, extract backport relationships, and load into pr_versions."""
+    repo = getattr(args, "repo", "oss")
     files = _collect_raw_files(args)
 
     version_rows = []
@@ -939,29 +1306,85 @@ def cmd_link_backport(args):
         with open(file_path) as f:
             raw_rows = json.load(f)
         for row in raw_rows:
-            title = row.get("title", "")
-            source_prs = parse_backport(title)
+            kind = row.get("pr_kind")
+            if kind is None:
+                kind = "backport" if parse_backport(row.get("title", "")) else "exclusive"
+            if kind != "backport":
+                continue
+            source_prs = parse_backport(row.get("title", ""))
             if not source_prs:
                 continue
-            # This is a backport PR → extract its version and link to source PRs
             version = row.get("version", "main")
             if version == "main":
-                # Backport PRs should have a branch version; skip if still "main"
+                # Backport PRs should land on a release branch; skip if unresolved
                 continue
-            backport_pr = row["pr_number"]
+            row_repo = row.get("repo", repo)
+            _assert_known_repo(row_repo, file_path.name)
             for src_pr in source_prs:
                 version_rows.append({
                     "pr_number": src_pr,
+                    "repo": row_repo,
                     "version": version,
-                    "backport_pr": backport_pr,
+                    "backport_pr": row["pr_number"],
                 })
 
     if not version_rows:
         print("No backport relationships found.")
         return
 
+    if any(is_enterprise(v["repo"]) for v in version_rows):
+        _assert_pr_data_migrated()
+
     print(f"Found {len(version_rows)} backport version mappings, loading into pr_versions ...")
     load_versions(version_rows)
+    print("Done.")
+
+
+def cmd_link_sync(args):
+    """Scan enterprise raw files and load (sync #N) mappings into pr_sync."""
+    repo = getattr(args, "repo", "oss")
+    if not is_enterprise(repo):
+        print("link-sync only applies to an enterprise repo (--repo cd|ms).")
+        return
+    files = _collect_raw_files(args)
+
+    sync_rows = []
+    for file_path in files:
+        with open(file_path) as f:
+            raw_rows = json.load(f)
+        for row in raw_rows:
+            kind = row.get("pr_kind")
+            src = row.get("sync_source_pr")
+            if kind is None:
+                # legacy raw file without pr_kind: derive sync directly from the title,
+                # mirroring cmd_link_backport's parse_backport fallback
+                srcs = parse_sync(row.get("title", ""))
+                if srcs:
+                    kind, src = "sync", srcs[0]
+            if kind != "sync" or not src:
+                continue
+            er = row.get("repo", repo)
+            _assert_known_repo(er, file_path.name)
+            sync_rows.append({
+                "oss_pr": int(src),
+                "ent_pr": int(row["pr_number"]),
+                "ent_repo": er,
+                "version": row.get("version", "main"),
+                "ent_merged_at": row.get("merged_at"),
+            })
+
+    if not sync_rows:
+        print("No sync mappings found.")
+        return
+    if not sr_query("SHOW TABLES LIKE 'pr_sync'"):
+        raise RuntimeError(
+            "pr_sync table does not exist — run `python3 pr.py migrate-repo` first.")
+    if not any(c.get("Field") == "ent_repo" for c in sr_query("DESC pr_sync")):
+        raise RuntimeError(
+            "pr_sync lacks the 'ent_repo' column (pre-mirrorship schema) — "
+            "run `python3 pr.py migrate-repo` first to rebuild it.")
+    print(f"Found {len(sync_rows)} sync mappings, loading into pr_sync ...")
+    stream_load_json("pr_sync", sync_rows)
     print("Done.")
 
 
@@ -971,17 +1394,19 @@ def cmd_search(args):
     """Semantic search PRs using vector index."""
     query = args.query
     top_k = args.top
+    repo = args.repo
 
-    print(f"Searching: {query}")
+    print(f"Searching: {query}" + (f"  [repo={repo}]" if repo != "all" else ""))
     print("  Generating query embedding via Ollama ...")
     query_embedding = ollama_embed(query)
     vec_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
 
+    repo_cond = f"AND repo = '{repo}'" if repo != "all" else ""
     sql = f"""
-SELECT pr_number, title, author, module, change_type, version, ai_summary, ai_summary_en, merged_at,
+SELECT pr_number, repo, title, author, module, change_type, version, ai_summary, ai_summary_en, merged_at,
        approx_cosine_similarity(embedding, ARRAY<FLOAT>{vec_str}) AS score
 FROM pr_data
-WHERE approx_cosine_similarity(embedding, ARRAY<FLOAT>{vec_str}) >= 0.3
+WHERE approx_cosine_similarity(embedding, ARRAY<FLOAT>{vec_str}) >= 0.3 {repo_cond}
 ORDER BY approx_cosine_similarity(embedding, ARRAY<FLOAT>{vec_str}) DESC
 LIMIT {top_k};
 """
@@ -1000,8 +1425,9 @@ LIMIT {top_k};
         score = float(r.get("score", 0))
         score_bar = "#" * int(score * 20)
         pr_num = r.get('pr_number', '?')
-        pr_url = f"https://github.com/{REPO}/pull/{pr_num}"
-        print(f"\n  [{i+1}] PR #{pr_num}  "
+        r_repo = r.get('repo', 'oss')
+        pr_url = f"https://github.com/{REPOS.get(r_repo, REPOS['oss'])['slug']}/pull/{pr_num}"
+        print(f"\n  [{i+1}] [{r_repo.upper()}] PR #{pr_num}  "
               f"score: {score:.4f} [{score_bar:<20}]")
         print(f"      Link:    {pr_url}")
         print(f"      Title:   {r.get('title', '')}")
@@ -1060,41 +1486,7 @@ def sr_query(sql: str, database=SR_DB) -> list:
 
 
 def load_to_starrocks(rows: list[dict]):
-    if not rows:
-        print("No rows to load.")
-        return
-
-    url = f"http://{SR_HOST}:{SR_HTTP_PORT}/api/{SR_DB}/pr_data/_stream_load"
-    payload = json.dumps(rows)
-
-    auth = base64.b64encode(f"{SR_USER}:{SR_PASSWORD}".encode()).decode()
-
-    # Use curl with -L to follow 307 redirect from FE to BE
-    cmd = [
-        "curl", "-s", "-L", "--location-trusted",
-        "--noproxy", "*",
-        "-X", "PUT",
-        "-H", f"Authorization: Basic {auth}",
-        "-H", "Content-Type: application/json",
-        "-H", "Expect: 100-continue",
-        "-H", "format: json",
-        "-H", "strip_outer_array: true",
-        "-d", "@-",
-        "--max-time", "120",
-        url,
-    ]
-    result = subprocess.run(cmd, input=payload, capture_output=True, text=True)
-    if result.returncode != 0 or not result.stdout.strip():
-        raise RuntimeError(
-            f"Stream Load failed (rc={result.returncode}): {result.stderr}")
-
-    resp = json.loads(result.stdout)
-    status = resp.get("Status", "Unknown")
-    loaded = resp.get("NumberLoadedRows", 0)
-    msg = resp.get("Message", "")
-    print(f"  Stream Load: Status={status}, Loaded={loaded} rows. {msg}")
-    if status not in ("Success", "Publish Timeout"):
-        print(f"  Full response: {json.dumps(resp, indent=2)}")
+    stream_load_json("pr_data", rows)
 
 
 # --- CLI ---
@@ -1103,8 +1495,9 @@ def main():
     parser = argparse.ArgumentParser(description="StarRocks PR Analytics (Ollama)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # pipeline: fetch → enrich → load → link-backport
-    p_pipe = sub.add_parser("pipeline", help="Run full pipeline: fetch → enrich → load → link-backport")
+    # pipeline: fetch → (link-sync for enterprise) → enrich → load → link-backport
+    p_pipe = sub.add_parser("pipeline", help="Run full pipeline: fetch → (link-sync for enterprise) → enrich → load → link-backport")
+    p_pipe.add_argument("--repo", type=str, default="oss", choices=REPO_CHOICES, help="Repository: oss (default), cd, or ms")
     p_pipe.add_argument("--days", type=int, default=1, help="Last N days")
     p_pipe.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
     p_pipe.add_argument("--until", type=str, help="End date, e.g. today")
@@ -1112,12 +1505,14 @@ def main():
 
     # fetch: pull raw PR data from GitHub
     p_fetch = sub.add_parser("fetch", help="Fetch raw PR data from GitHub → save JSON")
+    p_fetch.add_argument("--repo", type=str, default="oss", choices=REPO_CHOICES, help="Repository: oss (default), cd, or ms")
     p_fetch.add_argument("--days", type=int, default=1, help="Fetch PRs from last N days (ignored if --since is set)")
     p_fetch.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
     p_fetch.add_argument("--until", type=str, help="End date, e.g. 2025-04-30")
 
     # enrich: AI summary + embedding
     p_enrich = sub.add_parser("enrich", help="Generate AI summaries + embeddings for raw PR JSON")
+    p_enrich.add_argument("--repo", type=str, default="oss", choices=REPO_CHOICES, help="Repository: oss (default), cd, or ms")
     p_enrich.add_argument("--file", type=str, help="Raw PR JSON file path")
     p_enrich.add_argument("--days", type=int, default=1, help="Process last N days (ignored if --since or --file is set)")
     p_enrich.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
@@ -1126,11 +1521,15 @@ def main():
     p_enrich.add_argument("--reverse", action="store_true", help="Process files from newest to oldest")
 
     # init-table
-    p_init = sub.add_parser("init-table", help="Create StarRocks database and table")
-    p_init.add_argument("--force", action="store_true", help="Drop and recreate table if it exists")
+    p_init = sub.add_parser("init-table", help="Create StarRocks database and tables (pr_data + pr_versions + pr_sync)")
+    p_init.add_argument("--force", action="store_true", help="Drop and recreate all tables if they exist")
+
+    # migrate-repo: one-shot schema migration to repo-aware tables
+    sub.add_parser("migrate-repo", help="One-shot: add repo column to pr_data/pr_versions, create pr_sync")
 
     # load: import into StarRocks
     p_load = sub.add_parser("load", help="Load enriched JSON files into StarRocks")
+    p_load.add_argument("--repo", type=str, default="oss", choices=REPO_CHOICES, help="Repository: oss (default), cd, or ms")
     p_load.add_argument("--file", type=str, help="Enriched JSON file path")
     p_load.add_argument("--days", type=int, default=1, help="Process last N days (ignored if --since or --file is set)")
     p_load.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
@@ -1138,15 +1537,25 @@ def main():
 
     # link-backport: scan raw files and populate pr_versions with backport relationships
     p_link = sub.add_parser("link-backport", help="Scan raw files and load backport version mappings into pr_versions")
+    p_link.add_argument("--repo", type=str, default="oss", choices=REPO_CHOICES, help="Repository: oss (default), cd, or ms")
     p_link.add_argument("--file", type=str, help="Raw PR JSON file path")
     p_link.add_argument("--days", type=int, default=1, help="Process last N days (ignored if --since or --file is set)")
     p_link.add_argument("--since", type=str, help="Start date, e.g. 2025-04-01")
     p_link.add_argument("--until", type=str, help="End date (default: today)")
 
+    # link-sync: scan enterprise raw files and load sync mappings into pr_sync
+    p_link_sync = sub.add_parser("link-sync", help="Scan enterprise raw files and load (sync #N) mappings into pr_sync")
+    p_link_sync.add_argument("--repo", type=str, default="ms", choices=ENTERPRISE_REPOS, help="Enterprise repo: ms (current source, default) or cd")
+    p_link_sync.add_argument("--file", type=str, help="Raw PR JSON file path")
+    p_link_sync.add_argument("--days", type=int, default=1, help="Process last N days")
+    p_link_sync.add_argument("--since", type=str, help="Start date")
+    p_link_sync.add_argument("--until", type=str, help="End date (default: today)")
+
     # search
     p_search = sub.add_parser("search", help="Semantic search PRs")
     p_search.add_argument("query", help="Search query")
     p_search.add_argument("--top", type=int, default=10, help="Top K results")
+    p_search.add_argument("--repo", type=str, default="all", choices=REPO_CHOICES + ["all"], help="Repository filter (default: all, cross-repo)")
 
     args = parser.parse_args()
 
@@ -1156,10 +1565,14 @@ def main():
         cmd_enrich(args)
     elif args.command == "init-table":
         cmd_init_table(args)
+    elif args.command == "migrate-repo":
+        cmd_migrate_repo(args)
     elif args.command == "load":
         cmd_load(args)
     elif args.command == "link-backport":
         cmd_link_backport(args)
+    elif args.command == "link-sync":
+        cmd_link_sync(args)
     elif args.command == "search":
         cmd_search(args)
     elif args.command == "pipeline":

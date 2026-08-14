@@ -29,6 +29,8 @@ description: 用于将一个或多个 GitHub PR 分析为结构化 JSON，输出
   - `48091,72038`
   - `48091 72038`
   - `https://github.com/StarRocks/starrocks/pull/48091, https://github.com/StarRocks/starrocks/pull/72038`
+  - `https://github.com/CelerData/celerdata-enterprise/pull/59245`（企业仓库 PR 必须用完整 URL 给出）
+  - `https://github.com/MirrorShipDB/mirrorship-enterprise/pull/1234`（当前企业源 MirrorShip，同样用完整 URL）
 
 单个元素的默认结构如下：
 
@@ -67,6 +69,8 @@ description: 用于将一个或多个 GitHub PR 分析为结构化 JSON，输出
 - `owner`
 - `repo`
 - `pr_number`
+
+**仓库约定**：纯数字输入（无 URL）默认视为开源仓库 `StarRocks/starrocks` 的 PR 编号，用 `--repo StarRocks/starrocks`；企业仓库（历史 `CelerData/celerdata-enterprise`、当前 `MirrorShipDB/mirrorship-enterprise`）以及其他任何非开源仓库，必须以完整 GitHub URL 给出，从 URL 解析出的 `owner/repo` 用于 `gh pr view/diff --repo`。同一批输入可能混合裸编号与不同仓库的 URL，逐个按各自的 `owner/repo` 处理，不要用一个仓库覆盖整批。
 
 如果用户给的是多个值：
 

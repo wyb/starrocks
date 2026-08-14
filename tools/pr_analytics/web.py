@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 import pymysql
 import chat
+from pr import REPOS
 
 # --- Logging Setup ---
 LOG_DIR = Path(__file__).parent / "log"
@@ -47,9 +48,11 @@ SR_DB = "pr_analytics"
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "localhost")
 OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "300"))  # per ollama HTTP call
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 
-REPO = "StarRocks/starrocks"
+def _slug(repo: str) -> str:
+    return REPOS.get(repo or "oss", REPOS["oss"])["slug"]
 
 IMG_DIR = Path(tempfile.gettempdir()) / "pr_analytics_imgs"
 IMG_DIR.mkdir(exist_ok=True)
@@ -71,7 +74,7 @@ def _detect_image_ext(b: bytes) -> str | None:
 # --- Backend helpers ---
 
 def ollama_embed(text: str) -> list[float]:
-    conn = http.client.HTTPConnection(OLLAMA_HOST, OLLAMA_PORT, timeout=120)
+    conn = http.client.HTTPConnection(OLLAMA_HOST, OLLAMA_PORT, timeout=OLLAMA_TIMEOUT)
     payload = json.dumps({"model": EMBED_MODEL, "input": text[:4000]})
     try:
         conn.request("POST", "/api/embed", body=payload,
@@ -94,14 +97,19 @@ def _get_conn(database=SR_DB):
     )
 
 
-def sr_query(sql: str, database=SR_DB) -> list:
+def sr_query(sql: str, params=None, database=SR_DB) -> list:
+    # SECURITY: the load-bearing defense against SQL injection here is that NO
+    # untrusted value is ever interpolated into `sql` — every user-supplied filter
+    # value MUST be passed via `params` (placeholders), and every value inlined into
+    # the SQL text MUST be int()/enum-validated at its source.
+    # Do NOT rely on single-statement execution as a backstop: StarRocks FE runs all
+    # ';'-separated statements in one query regardless of the client multi-statement
+    # flag, so an injected ';' WOULD execute a stacked statement. Keep user data out
+    # of the SQL text, always.
     conn = _get_conn(database=database)
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            for stmt in sql.split(";"):
-                stmt = stmt.strip()
-                if stmt:
-                    cur.execute(stmt)
+            cur.execute(sql, params if params else None)
             return cur.fetchall()
     finally:
         conn.close()
@@ -167,27 +175,37 @@ def search_vector(query: str, top_k: int, filters: dict) -> list[dict]:
     where_clauses = [
         f"approx_cosine_similarity(d.embedding, ARRAY<FLOAT>{vec_str}) >= 0.3"
     ]
+    params = []
     join_clause = ""
-    if filters.get("pr_number"):
-        where_clauses.append(f"d.pr_number = {int(filters['pr_number'])}")
+    if filters.get("pr_number_clause"):
+        where_clauses.append(filters["pr_number_clause"])  # pre-built from int()+enum, safe
+    if filters.get("repo") in REPOS:
+        where_clauses.append("d.repo = %s")
+        params.append(filters["repo"])
     if filters.get("module"):
-        where_clauses.append(f"d.module = '{filters['module']}'")
+        where_clauses.append("d.module = %s")
+        params.append(filters["module"])
     if filters.get("change_type"):
-        where_clauses.append(f"d.change_type = '{filters['change_type']}'")
+        where_clauses.append("d.change_type = %s")
+        params.append(filters["change_type"])
     if filters.get("version"):
-        join_clause = "JOIN pr_versions v ON d.pr_number = v.pr_number"
-        where_clauses.append(f"v.version = '{filters['version']}'")
+        join_clause = "JOIN pr_versions v ON d.pr_number = v.pr_number AND d.repo = v.repo"
+        where_clauses.append("v.version = %s")
+        params.append(filters["version"])
     if filters.get("author"):
-        where_clauses.append(f"d.author = '{filters['author']}'")
+        where_clauses.append("d.author = %s")
+        params.append(filters["author"])
     if filters.get("since"):
-        where_clauses.append(f"d.merged_at >= '{filters['since']}'")
+        where_clauses.append("d.merged_at >= %s")
+        params.append(filters["since"])
     if filters.get("until"):
-        where_clauses.append(f"d.merged_at <= '{filters['until']} 23:59:59'")
+        where_clauses.append("d.merged_at <= %s")
+        params.append(f"{filters['until']} 23:59:59")
 
     where = " AND ".join(where_clauses)
 
     sql = f"""
-SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
+SELECT d.pr_number, d.repo, d.title, d.author, d.module, d.change_type, d.version,
        d.ai_summary, d.ai_summary_en, d.diff_keywords,
        d.merged_at, d.additions, d.deletions, d.changed_files,
        approx_cosine_similarity(d.embedding, ARRAY<FLOAT>{vec_str}) AS score
@@ -197,43 +215,58 @@ WHERE {where}
 ORDER BY score DESC
 LIMIT {top_k};
 """
-    return sr_query(sql)
+    return sr_query(sql, params)
 
 
 def search_sql(filters: dict, top_k: int) -> list[dict]:
     def build_where_clause(mode, kw):
         clauses = ["1=1"]
-        if filters.get("pr_number"):
-            clauses.append(f"d.pr_number = {int(filters['pr_number'])}")
+        params = []
+        if filters.get("pr_number_clause"):
+            clauses.append(filters["pr_number_clause"])  # pre-built from int()+enum, safe
+        if filters.get("repo") in REPOS:
+            clauses.append("d.repo = %s")
+            params.append(filters["repo"])
         if filters.get("module"):
-            clauses.append(f"d.module = '{filters['module']}'")
+            clauses.append("d.module = %s")
+            params.append(filters["module"])
         if filters.get("change_type"):
-            clauses.append(f"d.change_type = '{filters['change_type']}'")
+            clauses.append("d.change_type = %s")
+            params.append(filters["change_type"])
         if filters.get("author"):
-            clauses.append(f"d.author = '{filters['author']}'")
+            clauses.append("d.author = %s")
+            params.append(filters["author"])
         if filters.get("since"):
-            clauses.append(f"d.merged_at >= '{filters['since']}'")
+            clauses.append("d.merged_at >= %s")
+            params.append(filters["since"])
         if filters.get("until"):
-            clauses.append(f"d.merged_at <= '{filters['until']} 23:59:59'")
+            clauses.append("d.merged_at <= %s")
+            params.append(f"{filters['until']} 23:59:59")
 
         if mode == "like":
-            clauses.append(f"lower(d.searchable_text) LIKE lower('%{kw}%')")
+            clauses.append("lower(d.searchable_text) LIKE lower(%s)")
+            params.append(f"%{kw}%")
         elif mode == "all":
-            clauses.append(f"d.searchable_text MATCH_ALL '{kw}'")
+            clauses.append("d.searchable_text MATCH_ALL %s")
+            params.append(kw)
         elif mode == "any":
-            clauses.append(f"d.searchable_text MATCH_ANY '{kw}'")
+            clauses.append("d.searchable_text MATCH_ANY %s")
+            params.append(kw)
 
-        return " AND ".join(clauses)
+        return " AND ".join(clauses), params
 
-    def execute(where_stmt):
+    def execute(where_and_params):
+        where_stmt, params = where_and_params
+        params = list(params)
         join_clause = ""
         v_filter = ""
         if filters.get("version"):
-            join_clause = "JOIN pr_versions v ON d.pr_number = v.pr_number"
-            v_filter = f" AND v.version = '{filters['version']}'"
+            join_clause = "JOIN pr_versions v ON d.pr_number = v.pr_number AND d.repo = v.repo"
+            v_filter = " AND v.version = %s"
+            params.append(filters["version"])
 
         sql = f"""
-SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
+SELECT d.pr_number, d.repo, d.title, d.author, d.module, d.change_type, d.version,
        d.ai_summary, d.ai_summary_en, d.diff_keywords,
        d.merged_at, d.additions, d.deletions, d.changed_files
 FROM pr_data d
@@ -242,9 +275,9 @@ WHERE {where_stmt} {v_filter}
 ORDER BY d.merged_at DESC
 LIMIT {top_k};
 """
-        return sr_query(sql)
+        return sr_query(sql, params)
 
-    kw = filters.get("keyword", "").replace("'", "''")
+    kw = filters.get("keyword", "")
     mode = filters.get("match_mode", "auto")
 
     if not kw:
@@ -280,28 +313,32 @@ LIMIT {top_k};
 
 
 def get_stats() -> dict:
-    rows = sr_query(f"""
+    rows = sr_query("""
 SELECT COUNT(*) AS total,
        COUNT(DISTINCT author) AS authors,
        MIN(merged_at) AS earliest,
        MAX(merged_at) AS latest
 FROM pr_data;
 """)
-    if rows:
-        return rows[0]
-    return {}
+    stats = rows[0] if rows else {}
+    try:
+        by_repo = sr_query("SELECT repo, COUNT(*) AS c FROM pr_data GROUP BY repo;")
+        stats["by_repo"] = {r["repo"]: int(r["c"]) for r in by_repo}
+    except Exception:
+        pass
+    return stats
 
 
-def fetch_pr_versions(pr_numbers: list) -> dict:
-    """Fetch all version mappings for given PR numbers. Returns {pr_number: [{version, backport_pr}, ...]}."""
-    if not pr_numbers:
+def fetch_pr_versions(keys: list) -> dict:
+    """keys: [(pr_number, repo)]. Returns {(pr_number, repo): [{version, backport_pr}, ...]}."""
+    if not keys:
         return {}
-    in_list = ",".join(str(n) for n in pr_numbers)
-    rows = sr_query(f"SELECT pr_number, version, backport_pr FROM pr_versions WHERE pr_number IN ({in_list}) ORDER BY pr_number, version DESC;")
+    conds = " OR ".join(f"(pr_number = {int(n)} AND repo = '{r}')" for n, r in set(keys))
+    rows = sr_query(f"SELECT pr_number, repo, version, backport_pr FROM pr_versions WHERE {conds} ORDER BY pr_number, version DESC;")
     result = {}
     for r in rows:
-        pn = int(r["pr_number"])
-        result.setdefault(pn, []).append({
+        key = (int(r["pr_number"]), r["repo"])
+        result.setdefault(key, []).append({
             "version": r["version"],
             "backport_pr": int(r["backport_pr"]) if r.get("backport_pr") else None,
         })
@@ -310,49 +347,87 @@ def fetch_pr_versions(pr_numbers: list) -> dict:
 
 def attach_versions(results: list) -> list:
     """Attach version list to each result row."""
-    pr_numbers = [int(r["pr_number"]) for r in results]
-    versions_map = fetch_pr_versions(pr_numbers)
+    keys = [(int(r["pr_number"]), r.get("repo", "oss")) for r in results]
+    versions_map = fetch_pr_versions(keys)
     for r in results:
-        r["versions"] = versions_map.get(int(r["pr_number"]), [])
+        r["versions"] = versions_map.get((int(r["pr_number"]), r.get("repo", "oss")), [])
     return results
 
 
-def resolve_backport_pr(pr_number: int) -> int | None:
-    """If pr_number is a backport PR, return the main PR number. Otherwise return None."""
-    rows = sr_query(f"SELECT pr_number FROM pr_versions WHERE backport_pr = {pr_number} LIMIT 1;")
+def attach_sync(results: list) -> list:
+    """Attach direct enterprise sync landings to oss rows."""
+    oss_prs = sorted({int(r["pr_number"]) for r in results if r.get("repo", "oss") == "oss"})
+    if not oss_prs:
+        return results
+    in_list = ",".join(str(n) for n in oss_prs)
+    try:
+        rows = sr_query(f"SELECT oss_pr, ent_pr, ent_repo, version FROM pr_sync WHERE oss_pr IN ({in_list});")
+    except Exception:
+        return results  # pr_sync absent (pre-migration): degrade gracefully
+    m = {}
+    for row in rows:
+        m.setdefault(int(row["oss_pr"]), []).append(
+            {"ent_pr": int(row["ent_pr"]), "ent_repo": row.get("ent_repo", "cd"), "version": row.get("version")})
+    for r in results:
+        if r.get("repo", "oss") == "oss":
+            r["ent_syncs"] = m.get(int(r["pr_number"]), [])
+    return results
+
+
+def resolve_backport_pr(pr_number: int, repo: str) -> int | None:
+    """If pr_number is a backport PR within repo, return the main PR number."""
+    rows = sr_query(f"SELECT pr_number FROM pr_versions WHERE backport_pr = {pr_number} AND repo = '{repo}' LIMIT 1;")
     if rows:
         return int(rows[0]["pr_number"])
     return None
 
 
-def get_pr_detail(pr_number: int) -> dict | None:
-    rows = sr_query(f"""
-SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
+def get_pr_detail(pr_number: int, repo: str = "oss") -> dict | None:
+    def _query(num):
+        return sr_query(f"""
+SELECT d.pr_number, d.repo, d.title, d.author, d.module, d.change_type, d.version,
        d.ai_summary, d.ai_summary_en, d.diff_keywords, d.searchable_text,
        d.body, d.merged_at, d.additions,
        d.deletions, d.changed_files
 FROM pr_data d
-WHERE d.pr_number = {pr_number}
+WHERE d.pr_number = {num} AND d.repo = '{repo}'
 LIMIT 1;
 """)
+
+    rows = _query(pr_number)
     if not rows:
-        # Try resolving as a backport PR
-        main_pr = resolve_backport_pr(pr_number)
+        main_pr = resolve_backport_pr(pr_number, repo)
         if main_pr:
-            rows = sr_query(f"""
-SELECT d.pr_number, d.title, d.author, d.module, d.change_type, d.version,
-       d.ai_summary, d.ai_summary_en, d.diff_keywords, d.searchable_text,
-       d.body, d.merged_at, d.additions,
-       d.deletions, d.changed_files
-FROM pr_data d
-WHERE d.pr_number = {main_pr}
-LIMIT 1;
-""")
+            rows = _query(main_pr)
         if not rows:
             return None
 
     result = attach_versions(rows)[0]
-    result["github_url"] = f"https://github.com/{REPO}/pull/{result['pr_number']}"
+    result["github_url"] = f"https://github.com/{_slug(repo)}/pull/{result['pr_number']}"
+
+    if repo == "oss":
+        # Direct + indirect (via oss backport PRs) enterprise sync landings
+        nums = {int(result["pr_number"])}
+        nums.update(v["backport_pr"] for v in result.get("versions", []) if v.get("backport_pr"))
+        in_list = ",".join(str(n) for n in sorted(nums))
+        try:
+            rows2 = sr_query(f"SELECT oss_pr, ent_pr, ent_repo, version FROM pr_sync WHERE oss_pr IN ({in_list});")
+            result["ent_syncs"] = [
+                {"ent_pr": int(r["ent_pr"]), "ent_repo": r.get("ent_repo", "cd"),
+                 "version": r.get("version"), "via_oss_pr": int(r["oss_pr"])}
+                for r in rows2]
+        except Exception:
+            result["ent_syncs"] = []
+    else:
+        # enterprise PR detail: which oss PR it synced from (scoped to this enterprise repo,
+        # since ent_pr numbers can collide across cd/ms)
+        try:
+            rows2 = sr_query(
+                f"SELECT oss_pr, version FROM pr_sync "
+                f"WHERE ent_pr = {int(result['pr_number'])} AND ent_repo = '{repo}';")
+            result["synced_from"] = [{"oss_pr": int(r["oss_pr"]), "version": r.get("version")} for r in rows2]
+        except Exception:
+            result["synced_from"] = []
     return result
 
 
@@ -445,6 +520,10 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 .badge-type { background: #fce8e6; color: #c5221f; }
 .badge-version { background: #e6f4ea; color: #137333; }
 .badge-score { background: #fef7e0; color: #b06000; }
+.badge-repo-oss { background: #e8eaed; color: #3c4043; }
+.badge-repo-cd { background: #fce8b2; color: #7a4f01; }
+.badge-repo-ms { background: #d7e8fb; color: #0b4a8f; }
+.badge-sync { background: #f3e8fd; color: #7627bb; text-decoration: none; }
 .meta { font-size: 13px; color: #666; margin-bottom: 6px; }
 .summary { font-size: 14px; color: #444; line-height: 1.5; }
 .details-row { margin-top: 8px; }
@@ -614,6 +693,10 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
             </div>
 
             <div class="filters">
+                <label>Repo:</label>
+                <select id="f_repo">
+                    __REPO_OPTIONS__
+                </select>
                 <label>PR:</label>
                 <input type="text" id="f_pr_number" placeholder="66666" style="width:80px;">
                 <label>Module:</label>
@@ -689,7 +772,13 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script>
-const REPO = '__REPO__';
+const REPO_SLUGS = __REPOS_JSON__;
+const REPO_LABELS = __REPO_LABELS__;
+function prUrl(repo, num) {
+    const slug = REPO_SLUGS[repo || 'oss'] || REPO_SLUGS['oss'];
+    return 'https://github.com/' + slug + '/pull/' + num;
+}
+function repoLabel(repo) { return REPO_LABELS[repo] || 'OSS'; }
 function aiRenderMarkdown(text) {
     if (typeof marked === 'undefined') return escHtml(text || '');
     try {
@@ -728,13 +817,14 @@ function setMatchMode(val) {
 
 function resetFilters() {
     ['f_pr_number', 'f_since', 'f_until'].forEach(id => document.getElementById(id).value = '');
-    ['f_module', 'f_type', 'f_version', 'f_author'].forEach(id => document.getElementById(id).selectedIndex = 0);
+    ['f_repo', 'f_module', 'f_type', 'f_version', 'f_author'].forEach(id => document.getElementById(id).selectedIndex = 0);
     document.getElementById('f_top').value = '20';
     setMatchMode('auto');
 }
 
 function getFilters() {
     return {
+        repo: document.getElementById('f_repo').value,
         "pr_number": document.getElementById('f_pr_number').value.trim(),
         module: document.getElementById('f_module').value,
         change_type: document.getElementById('f_type').value,
@@ -815,7 +905,8 @@ function renderResultsIn(results, showScore, container) {
     }
     let html = `<div style="padding:8px 0;color:#666;font-size:14px;">共 ${results.length} 条结果</div>`;
     results.forEach((r, i) => {
-        const prUrl = 'https://github.com/' + REPO + '/pull/' + r.pr_number;
+        const rRepo = r.repo || 'oss';
+        const pUrl = prUrl(rRepo, r.pr_number);
         const scoreHtml = showScore && r.score
             ? `<span class="badge badge-score">score: ${parseFloat(r.score).toFixed(4)}</span>
                <span class="score-bar-bg"><span class="score-bar" style="width:${Math.max(parseFloat(r.score)*60, 4)}px"></span></span>`
@@ -824,7 +915,8 @@ function renderResultsIn(results, showScore, container) {
         <div class="result-card">
             <div class="result-header">
                 <span style="color:#999;font-size:13px;">${i+1}.</span>
-                <a class="pr-number" href="${prUrl}" target="_blank">#${r.pr_number}</a>
+                <span class="badge badge-repo-${REPO_LABELS[rRepo] ? rRepo : 'oss'}">${repoLabel(rRepo)}</span>
+                <a class="pr-number" href="${pUrl}" target="_blank">#${r.pr_number}</a>
                 <span class="pr-title">${escHtml(r.title)}</span>
             </div>
             <div class="result-header">
@@ -832,8 +924,13 @@ function renderResultsIn(results, showScore, container) {
                 <span class="badge badge-module">${r.module || ''}</span>
                 ${(r.versions || []).map(v => {
                     const prLink = v.backport_pr || r.pr_number;
-                    const url = 'https://github.com/' + REPO + '/pull/' + prLink;
+                    const url = prUrl(rRepo, prLink);
                     return '<a href="' + url + '" target="_blank" class="badge badge-version" style="text-decoration:none;">' + escHtml(v.version) + '</a>';
+                }).join('')}
+                ${(r.ent_syncs || []).map(s => {
+                    const er = s.ent_repo || 'cd';
+                    const label = repoLabel(er) + ' #' + s.ent_pr + (s.version && s.version !== 'main' ? ' (' + escHtml(s.version) + ')' : '');
+                    return '<a href="' + prUrl(er, s.ent_pr) + '" target="_blank" class="badge badge-sync">' + label + '</a>';
                 }).join('')}
                 ${scoreHtml}
             </div>
@@ -1314,7 +1411,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         params = dict(urllib.parse.parse_qsl(parsed.query))
 
         if path == "/" or path == "/index.html":
-            self._html(HTML_PAGE.replace("__REPO__", REPO))
+            slugs = {k: v["slug"] for k, v in REPOS.items()}
+            labels = {k: v["label"] for k, v in REPOS.items()}
+            opts = '<option value="">全部</option>' + ''.join(
+                f'<option value="{k}">{v["label"]}</option>' for k, v in REPOS.items())
+            page = (HTML_PAGE
+                    .replace("__REPOS_JSON__", json.dumps(slugs))
+                    .replace("__REPO_LABELS__", json.dumps(labels))
+                    .replace("__REPO_OPTIONS__", opts))
+            self._html(page)
         elif path == "/api/agent/search":
             self._handle_search(params)
         elif path == "/api/agent/filter":
@@ -1347,7 +1452,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise ValueError("top must be positive")
         return top_k
 
-    def _parse_pr_number_filter(self, params):
+    def _parse_repo(self, params, default="all"):
+        repo = params.get("repo", default) or default
+        if repo not in REPOS and repo != "all":
+            raise ValueError(f"repo must be one of {list(REPOS)} or all")
+        return repo
+
+    def _build_pr_number_clause(self, params, repo):
+        """Resolve pr_number (with per-repo backport resolution) into a SQL condition on d."""
         pr_number = params.get("pr_number", "")
         if not pr_number:
             return ""
@@ -1355,22 +1467,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pn = int(pr_number)
         except (TypeError, ValueError):
             raise ValueError("pr_number must be an integer")
-        # If the number is a backport PR, resolve to the main PR
-        main_pr = resolve_backport_pr(pn)
-        if main_pr:
-            return str(main_pr)
-        return str(pn)
+        repos = [repo] if repo in REPOS else list(REPOS)
+        parts = []
+        for r in repos:
+            resolved = resolve_backport_pr(pn, r) or pn
+            parts.append(f"(d.pr_number = {resolved} AND d.repo = '{r}')")
+        return "(" + " OR ".join(parts) + ")"
 
     def _search_filters(self, params):
         filters = {k: params.get(k, "") for k in
                    ("module", "change_type", "version", "author", "since", "until")}
-        filters["pr_number"] = self._parse_pr_number_filter(params)
+        filters["repo"] = self._parse_repo(params)
+        filters["pr_number_clause"] = self._build_pr_number_clause(params, filters["repo"])
         return filters
 
     def _filter_filters(self, params):
         filters = {k: params.get(k, "") for k in
                    ("module", "change_type", "version", "author", "since", "until", "keyword", "match_mode")}
-        filters["pr_number"] = self._parse_pr_number_filter(params)
+        filters["repo"] = self._parse_repo(params)
+        filters["pr_number_clause"] = self._build_pr_number_clause(params, filters["repo"])
         return filters
 
     def _resolve_text_arg(self, params, primary: str) -> str:
@@ -1392,7 +1507,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             top_k = self._parse_top_k(params)
             filters = self._search_filters(params)
-            results = attach_versions(search_vector(query, top_k, filters))
+            results = attach_sync(attach_versions(search_vector(query, top_k, filters)))
             self._json({"results": results})
         except ValueError as e:
             self._json({"error": str(e)}, 400)
@@ -1408,7 +1523,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         top_k = 5
         try:
             filters = self._search_filters(params)
-            results = attach_versions(search_vector(query, top_k, filters))
+            results = attach_sync(attach_versions(search_vector(query, top_k, filters)))
             analysis = ollama_analyze_fix(query, results)
             self._json({"analysis": analysis, "results": results})
         except ValueError as e:
@@ -1421,7 +1536,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             top_k = self._parse_top_k(params)
             filters = self._filter_filters(params)
             filters["keyword"] = self._resolve_text_arg(params, "keyword")
-            results = attach_versions(search_sql(filters, top_k))
+            results = attach_sync(attach_versions(search_sql(filters, top_k)))
             self._json({"results": results})
         except ValueError as e:
             self._json({"error": str(e)}, 400)
@@ -1434,16 +1549,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             self._json({"error": "invalid pr number"}, 400)
             return
-
+        parsed = urllib.parse.urlparse(self.path)
+        params = dict(urllib.parse.parse_qsl(parsed.query))
         try:
-            result = get_pr_detail(pr_number)
+            repo = self._parse_repo(params, default="oss")
+            if repo == "all":
+                repo = "oss"
+            result = get_pr_detail(pr_number, repo)
             if not result:
                 self._json({"error": "pr not found"}, 404)
                 return
-            # Indicate if the queried number was a backport PR
             if int(result["pr_number"]) != pr_number:
                 result["resolved_from_backport_pr"] = pr_number
             self._json({"result": result})
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
