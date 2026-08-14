@@ -520,7 +520,7 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 .badge-type { background: #fce8e6; color: #c5221f; }
 .badge-version { background: #e6f4ea; color: #137333; }
 .badge-score { background: #fef7e0; color: #b06000; }
-.badge-repo-oss { background: #e8eaed; color: #3c4043; }
+.badge-repo-oss { background: #d8f0ec; color: #0a6b5e; }
 .badge-repo-cd { background: #fce8b2; color: #7a4f01; }
 .badge-repo-ms { background: #d7e8fb; color: #0b4a8f; }
 .badge-sync { background: #f3e8fd; color: #7627bb; text-decoration: none; }
@@ -915,11 +915,11 @@ function renderResultsIn(results, showScore, container) {
         <div class="result-card">
             <div class="result-header">
                 <span style="color:#999;font-size:13px;">${i+1}.</span>
-                <span class="badge badge-repo-${REPO_LABELS[rRepo] ? rRepo : 'oss'}">${repoLabel(rRepo)}</span>
                 <a class="pr-number" href="${pUrl}" target="_blank">#${r.pr_number}</a>
                 <span class="pr-title">${escHtml(r.title)}</span>
             </div>
             <div class="result-header">
+                <span class="badge badge-repo-${REPO_LABELS[rRepo] ? rRepo : 'oss'}">${repoLabel(rRepo)}</span>
                 <span class="badge badge-type">${r.change_type || ''}</span>
                 <span class="badge badge-module">${r.module || ''}</span>
                 ${(r.versions || []).map(v => {
