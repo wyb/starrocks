@@ -543,7 +543,7 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 .pr-title { font-size: 15px; font-weight: 500; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 4px;
          font-size: 11px; font-weight: 500; }
-.badge-module { background: #e8f0fe; color: #1a73e8; }
+.badge-module { background: #eceef0; color: #5f6570; }
 .badge-type { background: #fce8e6; color: #c5221f; }
 .badge-version { background: #eff8f3; color: #137333; }
 .badge-score { background: #ede7f6; color: #5e35b1; }
@@ -725,8 +725,6 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
                 <select id="f_repo">
                     __REPO_OPTIONS__
                 </select>
-                <label>PR:</label>
-                <input type="text" id="f_pr_number" placeholder="66666" style="width:80px;">
                 <label>Module:</label>
                 <select id="f_module"><option value="">全部</option></select>
                 <label>Type:</label>
@@ -750,6 +748,8 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
                     <option value="100">100</option>
                     <option value="99999">不限</option>
                 </select>
+                <label>PR:</label>
+                <input type="text" id="f_pr_number" placeholder="66666" style="width:80px;">
             </div>
 
             <div class="divider"></div>
@@ -973,6 +973,7 @@ function renderResultsIn(results, showScore, container) {
                 <span style="color:#999;font-size:13px;">${i+1}.</span>
                 <a class="pr-number" href="${pUrl}" target="_blank">#${r.pr_number}</a>
                 <span class="pr-title">${escHtml(r.title)}</span>
+                ${r.module ? `<span class="badge badge-module">${escHtml(r.module)}</span>` : ''}
             </div>
             <div class="result-header xrepo">${crossRepoRow(r, scoreHtml)}</div>
             <div class="meta">
