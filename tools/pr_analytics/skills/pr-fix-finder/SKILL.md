@@ -47,7 +47,7 @@ description: 用户给出 StarRocks 的 crash 堆栈、报错信息、异常现�
   - `merged_at`, `additions`, `deletions`, `changed_files`
   - `score`（相似度分数）
   - `versions`：对象数组，格式为 `[{"version": "main", "backport_pr": null}, {"version": "3.3.2", "backport_pr": 71234}]`。（返回里另有一个标量 `version` = 该 PR 自身的合入版本；判断分支落点一律以 `versions` 数组为准，别用这个标量。）
-  - `ent_syncs`（仅 `repo=oss` 的结果）：该 PR **及其 OSS backport PR** 已同步到企业版的完整落点列表（直接 sync 与"OSS backport 的 sync"都包含）。每项形如 `[{"ent_pr": 59488, "ent_repo": "ms", "version": "4.1-ee", "via_oss_pr": 76640, "ent_versions": [{"version": "4.1", "backport_pr": 59500}]}]`：`ent_repo` 指落到哪个企业仓库（`cd`/`ms`），`via_oss_pr` 指该 sync 经由哪个 OSS PR（等于本 PR 号即直接 sync，否则是本 PR 的某个 backport），`ent_versions` 是该企业 sync PR 在企业仓内自身的分支 backport（即企业侧还落到了哪些分支）。字段现已与 `/api/agent/pr` 的 `ent_syncs` 一致，无需再靠 pr 详情补 backport 落点。
+  - `ent_syncs`（仅 `repo=oss` 的结果）：该 PR **及其 OSS backport PR** 已同步到企业版的完整落点列表（直接 sync 与"OSS backport 的 sync"都包含）。每项形如 `[{"ent_pr": 59488, "ent_repo": "ms", "version": "main", "via_oss_pr": 76640, "ent_versions": [{"version": "4.1", "backport_pr": 59500}]}]`：`ent_repo` 指落到哪个企业仓库（`cd`/`ms`），`via_oss_pr` 指该 sync 经由哪个 OSS PR（等于本 PR 号即直接 sync，否则是本 PR 的某个 backport），`ent_versions` 是该企业 sync PR 在企业仓内自身的分支 backport（即企业侧还落到了哪些分支）。字段现已与 `/api/agent/pr` 的 `ent_syncs` 一致，无需再靠 pr 详情补 backport 落点。
 
 #### `GET /api/agent/filter`
 
@@ -70,8 +70,8 @@ PR 详情。
   - `body`（PR 原始描述）
   - `versions`：对象数组，格式同上
   - `github_url`
-  - `repo=oss` 时含 `ent_syncs`：`[{"ent_pr": 59488, "ent_repo": "ms", "version": "4.1-ee", "via_oss_pr": 76640, "ent_versions": [{"version": "4.1", "backport_pr": 59500}]}]`，该 PR 及其 backport PR 已同步到企业版的落点（`ent_repo` 区分 `cd`/`ms`；`ent_versions` 为该企业 sync PR 在企业仓内的分支 backport 落点）；字段与 `/api/agent/search` 的 `ent_syncs` 一致
-  - `repo=cd|ms`（企业仓库）且传入号**本身就是 `pr_data` 里的 `exclusive`（企业独有）PR** 时，返回"这条企业 PR 自己"，含 `synced_from`：`[{"oss_pr": 76640, "version": "4.1-ee"}]`（它从哪个开源 PR 同步来；`exclusive` 一般为空）。若传入的是企业 **sync / backport 号**（不在 `pr_data`），则不会 404，而是解析成对应的**开源主 PR** 返回（`repo=oss`，带 `ent_syncs` 与 `query_match`）。
+  - `repo=oss` 时含 `ent_syncs`：`[{"ent_pr": 59488, "ent_repo": "ms", "version": "main", "via_oss_pr": 76640, "ent_versions": [{"version": "4.1", "backport_pr": 59500}]}]`，该 PR 及其 backport PR 已同步到企业版的落点（`ent_repo` 区分 `cd`/`ms`；`ent_versions` 为该企业 sync PR 在企业仓内的分支 backport 落点）；字段与 `/api/agent/search` 的 `ent_syncs` 一致
+  - `repo=cd|ms`（企业仓库）且传入号**本身就是 `pr_data` 里的 `exclusive`（企业独有）PR** 时，返回"这条企业 PR 自己"，含 `synced_from`：`[{"oss_pr": 76640, "version": "4.1"}]`（它从哪个开源 PR 同步来；`exclusive` 一般为空）。若传入的是企业 **sync / backport 号**（不在 `pr_data`），则不会 404，而是解析成对应的**开源主 PR** 返回（`repo=oss`，带 `ent_syncs` 与 `query_match`）。
   - 输入编号被解析时（backport → 主 PR，或企业 sync → 开源主 PR），`result.pr_number` / `repo` 是**解析后的目标 PR**，并附 `query_match`：`{"typed": <你输入的号>, "kind": "backport" | "sync" | "backport sync"}`——`kind` 表示你输入的号经哪条链落到该 PR（只经 pr_versions=`backport`；只经 pr_sync=`sync`；两者都经=`backport sync`）。结论里应**同时标注你输入的号与解析后的主 PR 号**，别把返回的主 PR 号误当成你查询的那个编号。直接命中时无 `query_match`。
 
 ### 代理使用

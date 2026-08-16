@@ -208,8 +208,8 @@ python3 web.py --host 127.0.0.1 --port 9090
 - **筛选条件**：Repo（全部 / `OSS` / `CD` / `MS`，下拉按 `REPOS` 动态生成）/ PR# / Module / Type / Version / Author / 时间范围
 - 每条结果带 `OSS` / `CD` / `MS` 徽章标识来源仓库，PR 链接按所属 repo 拼接到对应 GitHub 仓库
 - 每个 PR 展示所有关联版本（含 backport），版本号可点击跳转对应 PR
-- 开源 PR 如果已经同步进企业版，额外展示 `CD #`/`MS #<企业PR号>` 徽章（形如 `MS #59488 (4.1-ee)`，前缀是同步落到的企业仓库；此处为 PR 自身的直接同步落点，含 backport 间接同步的完整落点见 agent 接口 `/api/agent/pr/<number>`），点击跳转企业仓库对应 PR
-- 指定 PR# 过滤时，如果输入的是 backport PR 号，会自动反查并返回主 PR；不限定 Repo（即“全部”）时开源和企业两侧会分别尝试反查
+- 开源 PR 若已同步进企业版，结果行按仓库分组展示跨仓落点（形如 `OSS main 4.1 | CD main 4.1`——`OSS`/`CD`/`MS` 标签后跟各分支版本，点击版本跳转对应仓库 PR），已含经 OSS backport 的间接同步落点
+- 指定 PR# 过滤：backport 号自动反查主 PR；企业侧的 sync / 分支 backport 号会解析到对应的**开源主 PR**（sync/backport PR 不进 `pr_data`），并标注匹配类型（`backport` / `sync` / `backport sync`）；不限定 Repo 时各仓分别尝试解析
 - **AI 分析抽屉**（右上角 “✨ AI 分析” 按钮）：基于 codex CLI 调用 `pr-fix-finder` skill，流式输出分析过程和结论，支持多轮追问。详见下方"AI 分析抽屉"章节。
 
 ### 10. 定时运行（守护进程）
@@ -343,7 +343,7 @@ tail -f daemon.log
 | `oss_pr` | 开源 PR 编号（联合主键 `(oss_pr, ent_pr, ent_repo)` 之一），即 `(sync #N)` 中的 N |
 | `ent_pr` | 企业 PR 编号（联合主键之一） |
 | `ent_repo` | 企业仓库短码 `cd` / `ms`（联合主键之一）——两个企业仓库 PR 号区间重叠，靠它区分同步落到哪个仓库 |
-| `version` | 企业侧落点版本：release 粒度 `x.y.z-ee`（有 `version:` 标签时）或分支粒度 `main` / `X.Y`（从 base_ref 派生） |
+| `version` | 企业侧落点版本：release 粒度 `x.y.z`（有 `version:` 标签时，归一后去掉 `-ee`）或分支粒度 `main` / `X.Y`（从 base_ref 派生） |
 | `ent_merged_at` | 企业 PR 合并时间 |
 
 同一个开源 PR 可能对应多个企业 sync PR（分别同步到不同企业分支 / 不同企业仓库），`(oss_pr, ent_pr, ent_repo)` 联合主键天然容纳这种一对多关系。

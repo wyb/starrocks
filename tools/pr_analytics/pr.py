@@ -305,9 +305,9 @@ def clean_base_ref(base_ref: str) -> str:
 
 
 def normalize_version(v: str) -> str:
-    """Unify version granularity by dropping -ee (enterprise edition) and -cc suffixes:
-    4.1.4-ee -> 4.1.4, 3.5-cc -> 3.5, 4.0-ee-cc -> 4.0. Keeps a version comparable across the
-    OSS/enterprise split so pr_data/pr_versions/pr_sync join on one canonical version key."""
+    """Unify version granularity by dropping the -ee (enterprise edition) suffix, e.g.
+    4.1.4-ee -> 4.1.4, so a version is comparable across the OSS/enterprise split and
+    pr_data/pr_versions/pr_sync join on one canonical version key."""
     v = re.sub(r"(?:-(?:ee|cc))+$", "", (v or "").strip())
     return v or "main"
 
@@ -315,9 +315,9 @@ def normalize_version(v: str) -> str:
 def derive_version(repo: str, labels: str, base_ref: str) -> str:
     """version:x.y.z(-ee) label first; otherwise fall back to the base branch — for ANY repo.
     Without the base_ref fallback for oss too, a backport merged into an unlabeled release
-    branch (e.g. branch-3.5-cc, which never gets a version: label) derives "main" and is then
+    branch (one that never gets a version: label) derives "main" and is then
     silently dropped by link-backport; the fallback gives it a branch-granularity version.
-    The result is normalize_version()'d (no -ee/-cc suffix) and clamped to the version
+    The result is normalize_version()'d (no -ee suffix) and clamped to the version
     VARCHAR(64) column. (repo kept for call-site clarity.)"""
     v = infer_version(labels)
     if v == "main":
@@ -1034,7 +1034,7 @@ CREATE TABLE {table} (
     changed_files   INT            COMMENT '变更文件数',
     module          VARCHAR(64)    COMMENT '模块: FE/BE/Docs/Tool',
     change_type     VARCHAR(64)    COMMENT '变更类型',
-    version         VARCHAR(64)    NOT NULL DEFAULT 'main' COMMENT '版本: main/4.1.1/4.1.4-ee/...',
+    version         VARCHAR(64)    NOT NULL DEFAULT 'main' COMMENT '版本: main/4.1.1/4.1.4/... (归一后无 -ee)',
     ai_summary      VARCHAR(65533) COMMENT 'AI中文摘要',
     ai_summary_en   VARCHAR(65533) COMMENT 'AI英文摘要',
     diff_keywords   VARCHAR(65533) COMMENT '结构化检索关键词, 用于展示和诊断',
@@ -1076,7 +1076,7 @@ CREATE TABLE pr_sync (
     oss_pr         INT          NOT NULL COMMENT '开源 PR 编号 (sync #N)',
     ent_pr         INT          NOT NULL COMMENT '企业 PR 编号',
     ent_repo       VARCHAR(16)  NOT NULL DEFAULT 'cd' COMMENT '企业仓库短码: cd/ms',
-    version        VARCHAR(64)  COMMENT '企业侧落点: main/X.Y/x.y.z-ee',
+    version        VARCHAR(64)  COMMENT '企业侧落点: main/X.Y/x.y.z (归一后无 -ee)',
     ent_merged_at  DATETIME     COMMENT '企业 PR 合并时间'
 ) ENGINE = OLAP
 PRIMARY KEY(oss_pr, ent_pr, ent_repo)
@@ -1320,7 +1320,7 @@ def cmd_load(args):
         for r in rows:
             r.setdefault("repo", "oss")  # old enriched files lack repo; pr_data.repo is NOT NULL
             _assert_known_repo(r["repo"], file_path.name)
-            r["version"] = normalize_version(r.get("version", "main"))  # strip -ee/-cc from legacy JSON too
+            r["version"] = normalize_version(r.get("version", "main"))  # strip -ee from legacy JSON too
         if not checked_migrated and any(is_enterprise(r.get("repo", "oss")) for r in rows):
             _assert_pr_data_migrated()
             checked_migrated = True
