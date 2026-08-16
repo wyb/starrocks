@@ -485,10 +485,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
        background: #f5f7fa; color: #333; }
 .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
 h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
-.stats { display: flex; gap: 16px; justify-content: center; margin-bottom: 24px; flex-wrap: wrap; }
-.stat-card { background: #fff; padding: 12px 24px; border-radius: 8px;
+.stats { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+.stat-card { flex: 1; background: #fff; padding: 10px 16px; border-radius: 8px;
              box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; }
 .stat-card .num { font-size: 24px; font-weight: bold; color: #1a73e8; }
+.stat-card .num.num-date { white-space: nowrap; }
 .stat-card .label { font-size: 12px; color: #666; margin-top: 4px; }
 
 .search-box { background: #fff; padding: 20px; border-radius: 12px;
@@ -928,6 +929,8 @@ function crossRepoRow(r, scoreHtml) {
     const mkGroup = (repo, entries) => {
         entries = dedup(entries);
         if (!entries.length) return '';
+        // consistent order across all repos: main first, then version DESC (matches OSS / fetch_pr_versions' ORDER BY version DESC)
+        entries.sort((a, b) => (a.version < b.version ? 1 : a.version > b.version ? -1 : 0));
         const label = '<span class="badge badge-repo-' + (REPO_LABELS[repo] ? repo : 'oss') + '">' + repoLabel(repo) + '</span>';
         const vers = entries.map(e => '<a href="' + prUrl(repo, e.pr) + '" target="_blank" class="badge badge-version" style="text-decoration:none;">' + escHtml(e.version) + '</a>').join(' ');
         return '<span class="repo-group">' + label + ' ' + vers + '</span>';
@@ -1362,17 +1365,16 @@ async function init() {
         const se = document.getElementById('stats');
         if (stats) {
             const byRepo = stats.by_repo || {};
-            // one card per repo that has data, in REPOS order (oss, cd, ms); same card style as Total
-            const repoCards = Object.keys(REPO_LABELS)
-                .filter(k => byRepo[k])
-                .map(k => `<div class="stat-card"><div class="num">${byRepo[k]}</div><div class="label">${REPO_LABELS[k]} PRs</div></div>`)
-                .join('');
+            const total = stats.total || 0;
+            const oss = byRepo['oss'] || 0;
+            const ent = Math.max(total - oss, 0);  // 企业 = 全部非 oss（cd + ms），不单独拆分
             se.innerHTML = `
-                <div class="stat-card"><div class="num">${stats.total || 0}</div><div class="label">Total PRs</div></div>
-                ${repoCards}
+                <div class="stat-card"><div class="num">${total}</div><div class="label">Total PRs</div></div>
+                <div class="stat-card"><div class="num">${oss}</div><div class="label">OSS PRs</div></div>
+                <div class="stat-card"><div class="num">${ent}</div><div class="label">Enterprise PRs</div></div>
                 <div class="stat-card"><div class="num">${stats.authors || 0}</div><div class="label">Contributors</div></div>
-                <div class="stat-card"><div class="num">${stats.earliest || '-'}</div><div class="label">Earliest</div></div>
-                <div class="stat-card"><div class="num">${stats.latest || '-'}</div><div class="label">Latest</div></div>`;
+                <div class="stat-card"><div class="num num-date">${stats.earliest || '-'}</div><div class="label">Earliest</div></div>
+                <div class="stat-card"><div class="num num-date">${stats.latest || '-'}</div><div class="label">Latest</div></div>`;
         }
         if (options) {
             const addOpts = (id, items) => {
