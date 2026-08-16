@@ -16,16 +16,16 @@ description: 用户给出 StarRocks 的 crash 堆栈、报错信息、异常现�
 ## 核心前提
 
 - **知识库状态**：库中所有的 PR 都是**已合入 (Merged)** 的。不存在"正在修复"或"待合并"的状态。
-- **覆盖范围**：知识库同时索引开源仓库（`StarRocks/starrocks`，`repo=oss`）与企业仓库（`repo=cd` CelerData / `repo=ms` MirrorShip）的合并 PR。检索接口默认 `repo=all`，联合全部仓库返回结果；企业仓库中的 `sync`（开源同步）、`backport`、`conflict_fix`（同步解冲突，`change_type=SyncFix`）三类 PR 都不会被单独摘要和索引，只体现在同步/版本映射关系里，不会作为独立候选出现——能作为独立候选检索到的企业 PR 只有 `exclusive`（企业独有）一类。
+- **覆盖范围**：知识库索引开源仓库（`StarRocks/starrocks`，`repo=oss`）与企业仓库（`repo=cd` CelerData / `repo=ms` MirrorShip）的合并 PR，默认 `repo=all` 联合检索。**但 `backport` PR（任何仓库都跳过）、以及企业仓的 `sync`（开源同步）/ `conflict_fix`（同步解冲突，`change_type=SyncFix`）都不会被单独摘要和索引**，只体现在版本/同步映射里，不作为独立候选出现。能作为独立候选检索到的只有：开源侧的主 PR、企业侧的 `exclusive`（企业独有）PR；backport 落点通过 `versions` 数组呈现、企业同步通过 `ent_syncs` 呈现。
 - **目标**：找到修复该问题的具体 PR，或确认在当前知识库中未发现相关修复。
-- **核心数据**：每个 PR 都有结构化的 `diff_keywords`（symptom/cause/fix/symbols/files/keywords）和 `searchable_text`。`searchable_text` 是倒排检索文本，也是生成 `embedding` 的语义来源；向量索引建立在 `embedding` 字段上。它们是检索和评估的一等证据源。
+- **核心数据**：每个 PR 都有 `diff_keywords`（**多行文本**，含 symptom/cause/fix/symbols/files/keywords 标注行）和 `searchable_text`。`searchable_text` 是倒排检索文本，也是生成 `embedding` 的语义来源；向量索引建立在 `embedding` 字段上。它们是检索和评估的一等证据源。
 
 ## 约束
 
 - 不要虚构未命中的 PR，不要声称某个修复"应该存在"。
 - 不要跳过问题拆解直接搜索。
 - 不要在没有结构化证据对齐的情况下判定 `strong`。
-- 不要仅因为 PR 的 `change_type` 不是 BugFix、或 PR body 声明 "no behavior change"、或 `diff_keywords.symptom` 描述为 "future risk" 就将候选判为 `irrelevant`。必须先确认实际变更是否覆盖用户 crash 路径。
+- 不要仅因为 PR 的 `change_type` 不是 BugFix、或 PR body 声明 "no behavior change"、或 `diff_keywords` 里的 symptom 行描述为 "future risk" 就将候选判为 `irrelevant`。必须先确认实际变更是否覆盖用户 crash 路径。
 - 当候选 PR 的 symbols 命中用户 crash 栈中 ≥ 2 个符号（类名/函数名），即使 PR 类型为 Refactor 或 Enhancement，也必须读实际代码 diff 后才能排除。
 
 ## 依赖接口
@@ -48,6 +48,7 @@ description: 用户给出 StarRocks 的 crash 堆栈、报错信息、异常现�
   - `score`（相似度分数）
   - `versions`：对象数组，格式为 `[{"version": "main", "backport_pr": null}, {"version": "3.3.2", "backport_pr": 71234}]`。（返回里另有一个标量 `version` = 该 PR 自身的合入版本；判断分支落点一律以 `versions` 数组为准，别用这个标量。）
   - `ent_syncs`（仅 `repo=oss` 的结果）：该 PR **及其 OSS backport PR** 已同步到企业版的完整落点列表（直接 sync 与"OSS backport 的 sync"都包含）。每项形如 `[{"ent_pr": 59488, "ent_repo": "ms", "version": "main", "via_oss_pr": 76640, "ent_versions": [{"version": "4.1", "backport_pr": 59500}]}]`：`ent_repo` 指落到哪个企业仓库（`cd`/`ms`），`via_oss_pr` 指该 sync 经由哪个 OSS PR（等于本 PR 号即直接 sync，否则是本 PR 的某个 backport），`ent_versions` 是该企业 sync PR 在企业仓内自身的分支 backport（即企业侧还落到了哪些分支）。字段现已与 `/api/agent/pr` 的 `ent_syncs` 一致，无需再靠 pr 详情补 backport 落点。
+  - `query_match`（仅当用 `pr_number` 过滤、且该号经解析命中时才有；普通 query/keyword 检索不会出现）：`{"typed": <你输入的号>, "kind": "backport" | "sync" | "backport sync"}`，说明该结果由你输入的号经哪条链解析而来（详见 `/api/agent/pr` 一节）
 
 #### `GET /api/agent/filter`
 
@@ -66,6 +67,7 @@ PR 详情。
 - `repo`：`oss` / `cd` / `ms` / `all`，默认 `all`。**候选来自哪个仓库就传对应的 `repo` 直接定位那一条**；不传则跨全部仓库查。传入编号会按需自动解析：backport 号 → 其主 PR；企业仓的 **sync / 分支 backport 号**（不在 `pr_data`）→ 它对应的**开源主 PR**（该条 `repo=oss` 且带 `query_match`，见下）。**同一个号在多个仓库各是一条不同的 PR（号区间重叠）时会各返回一条**——务必按每条的 `repo` 字段区分，别默认第一条就是你要的。
 - 返回 `{"results": [...]}`（**列表**：同号多仓各一条则多条、只一个仓有则 size 1、都没有则 `[]` 即"未找到"）。每条包含：
   - `pr_number`, `repo`, `title`, `author`, `module`, `change_type`
+  - `merged_at`, `additions`, `deletions`, `changed_files`
   - `ai_summary`, `ai_summary_en`, `diff_keywords`, `searchable_text`
   - `body`（PR 原始描述）
   - `versions`：对象数组，格式同上
@@ -126,7 +128,7 @@ PR 详情。
 | 场景 | 推荐方式 | 说明 |
 |------|-----------|------|
 | 精确符号：类名、函数名、配置项、错误码 | `all` | 所有 token 必须同时命中 |
-| 文件名、路径片段 | 不作为首选 filter query | `searchable_text` 不包含 files 信息；files 主要用于召回后的结构化校验 |
+| 文件名、路径片段 | 不作为首选 filter query | 文件名/路径作为全文 query 精度低、噪声大，召回差；files 主要用于召回后的结构化校验 |
 | 症状 + 模块组合 | `all` | 如 `wrong result materialized view`、`crash compaction` |
 | cause 短语 | `all` | 如 `null pointer dereference` |
 | 术语扩展、相邻表达、宽松召回 | `any` | 任一 token 命中即可 |
@@ -329,8 +331,7 @@ PR 的 `change_type`（BugFix/Refactor/Enhancement）、title、body 中的行�
 
 - **如果候选已包含 `diff_keywords` 和 `ai_summary_en`，且不满足下方 diff 验证条件，直接评估，不需要补全。**
 - 只在以下情况调用 `/api/agent/pr/<number>`：
-  - 列表结果缺少 `versions` 字段
-  - 证据差一点需要看 body 细节
+  - 证据差一点，需要看**只在详情里才有**的字段：`body`（PR 原始描述）或 `searchable_text`（search/filter 列表结果不含这两个；而 `versions` / `ent_syncs` 列表结果已带，不必为它们补详情）
 - 调用时带上候选自身的 `repo`（search/filter 结果每条都带 `repo` 字段）直接定位那一条；不传 `repo` 则返回该号在所有仓库的匹配（列表），需按每条的 `repo` 字段挑出候选对应的那条，别默认第一条。
 - 补全后优先分析 `diff_keywords` + `body` + `versions`，`searchable_text` 只作辅助，不要直接长篇引用。
 - `/api/agent/pr/<number>` 最多补全 6 个。
