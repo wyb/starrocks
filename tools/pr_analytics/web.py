@@ -1676,14 +1676,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         params = dict(urllib.parse.parse_qsl(parsed.query))
         try:
-            repo = self._parse_repo(params, default="oss")
-            if repo == "all":
-                repo = "oss"
-            result = get_pr_detail(pr_number, repo)
-            if not result:
-                self._json({"error": "pr not found"}, 404)
-                return
-            self._json({"result": result})
+            repo = self._parse_repo(params, default="all")
+            repos = [repo] if repo in REPOS else list(REPOS)
+            # Look the number up in each repo in scope (default: all repos). The same number can be
+            # a DIFFERENT PR in oss vs cd/ms (number ranges overlap), so return every match as a
+            # list — size 1 when only one repo has it, size >1 on a collision. Each entry keeps its
+            # own repo + query_match. Dedup by (pr_number, repo) since a sync number in cd and ms
+            # can resolve to the same oss PR.
+            results, seen = [], set()
+            for r in repos:
+                detail = get_pr_detail(pr_number, r)
+                if not detail:
+                    continue
+                key = (int(detail["pr_number"]), detail.get("repo", "oss"))
+                if key not in seen:
+                    seen.add(key)
+                    results.append(detail)
+            self._json({"results": results})
         except ValueError as e:
             self._json({"error": str(e)}, 400)
         except Exception as e:

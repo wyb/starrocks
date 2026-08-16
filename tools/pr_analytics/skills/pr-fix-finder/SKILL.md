@@ -63,15 +63,15 @@ description: 用户给出 StarRocks 的 crash 堆栈、报错信息、异常现�
 
 PR 详情。
 
-- `repo`：`oss` / `cd` / `ms`，默认 `oss`。**候选来自哪个仓库就传对应的 `repo`**。传入编号会按需自动解析：backport 号 → 其主 PR；企业仓的 **sync / 分支 backport 号**（不在 `pr_data`）→ 它对应的**开源主 PR**（返回 `repo=oss` 结果 + `query_match`，见下）。只有在指定 `repo` 里既查不到、又无法解析时才返回 404 `pr not found`。多个仓恰有同号但不同的 PR（号区间重叠）时，只在你传的 `repo` 内匹配。
-- 返回 `{"result": {...}}`，包含：
+- `repo`：`oss` / `cd` / `ms` / `all`，默认 `all`。**候选来自哪个仓库就传对应的 `repo` 直接定位那一条**；不传则跨全部仓库查。传入编号会按需自动解析：backport 号 → 其主 PR；企业仓的 **sync / 分支 backport 号**（不在 `pr_data`）→ 它对应的**开源主 PR**（该条 `repo=oss` 且带 `query_match`，见下）。**同一个号在多个仓库各是一条不同的 PR（号区间重叠）时会各返回一条**——务必按每条的 `repo` 字段区分，别默认第一条就是你要的。
+- 返回 `{"results": [...]}`（**列表**：同号多仓各一条则多条、只一个仓有则 size 1、都没有则 `[]` 即"未找到"）。每条包含：
   - `pr_number`, `repo`, `title`, `author`, `module`, `change_type`
   - `ai_summary`, `ai_summary_en`, `diff_keywords`, `searchable_text`
   - `body`（PR 原始描述）
   - `versions`：对象数组，格式同上
   - `github_url`
   - `repo=oss` 时含 `ent_syncs`：`[{"ent_pr": 59488, "ent_repo": "ms", "version": "main", "via_oss_pr": 76640, "ent_versions": [{"version": "4.1", "backport_pr": 59500}]}]`，该 PR 及其 backport PR 已同步到企业版的落点（`ent_repo` 区分 `cd`/`ms`；`ent_versions` 为该企业 sync PR 在企业仓内的分支 backport 落点）；字段与 `/api/agent/search` 的 `ent_syncs` 一致
-  - `repo=cd|ms`（企业仓库）且传入号**本身就是 `pr_data` 里的 `exclusive`（企业独有）PR** 时，返回"这条企业 PR 自己"，含 `synced_from`：`[{"oss_pr": 76640, "version": "4.1"}]`（它从哪个开源 PR 同步来；`exclusive` 一般为空）。若传入的是企业 **sync / backport 号**（不在 `pr_data`），则不会 404，而是解析成对应的**开源主 PR** 返回（`repo=oss`，带 `ent_syncs` 与 `query_match`）。
+  - `repo=cd|ms` 的结果条（传入号本身就是 `pr_data` 里的 `exclusive`（企业独有）PR）含 `synced_from`：`[{"oss_pr": 76640, "version": "4.1"}]`（它从哪个开源 PR 同步来；`exclusive` 一般为空）。若传入的是企业 **sync / backport 号**（不在 `pr_data`），该条会解析成对应的**开源主 PR**（`repo=oss`，带 `ent_syncs` 与 `query_match`），而不是缺失。
   - 输入编号被解析时（backport → 主 PR，或企业 sync → 开源主 PR），`result.pr_number` / `repo` 是**解析后的目标 PR**，并附 `query_match`：`{"typed": <你输入的号>, "kind": "backport" | "sync" | "backport sync"}`——`kind` 表示你输入的号经哪条链落到该 PR（只经 pr_versions=`backport`；只经 pr_sync=`sync`；两者都经=`backport sync`）。结论里应**同时标注你输入的号与解析后的主 PR 号**，别把返回的主 PR 号误当成你查询的那个编号。直接命中时无 `query_match`。
 
 ### 代理使用
@@ -331,7 +331,7 @@ PR 的 `change_type`（BugFix/Refactor/Enhancement）、title、body 中的行�
 - 只在以下情况调用 `/api/agent/pr/<number>`：
   - 列表结果缺少 `versions` 字段
   - 证据差一点需要看 body 细节
-- 调用时必须带上候选自身的 `repo`（search/filter 结果每条都带 `repo` 字段）；不传 `repo` 默认查开源仓库，候选如果来自企业检索结果，不传会查错 PR 或 404。
+- 调用时带上候选自身的 `repo`（search/filter 结果每条都带 `repo` 字段）直接定位那一条；不传 `repo` 则返回该号在所有仓库的匹配（列表），需按每条的 `repo` 字段挑出候选对应的那条，别默认第一条。
 - 补全后优先分析 `diff_keywords` + `body` + `versions`，`searchable_text` 只作辅助，不要直接长篇引用。
 - `/api/agent/pr/<number>` 最多补全 6 个。
 
