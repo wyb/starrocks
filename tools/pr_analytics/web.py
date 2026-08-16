@@ -405,27 +405,56 @@ def resolve_backport_pr(pr_number: int, repo: str) -> int | None:
     return None
 
 
+def resolve_sync_oss_pr(ent_pr: int, ent_repo: str) -> int | None:
+    """If ent_pr is an enterprise sync PR in ent_repo, return the oss PR it synced from.
+    Enterprise sync PRs (main-branch sync + their release-branch backports) are never enriched
+    into pr_data — they live only in pr_sync — so a lookup by their number finds nothing unless
+    we map back to the oss PR that actually carries the content."""
+    try:
+        rows = sr_query(
+            f"SELECT oss_pr FROM pr_sync WHERE ent_pr = {int(ent_pr)} AND ent_repo = '{ent_repo}' LIMIT 1;")
+    except Exception:
+        return None  # pr_sync absent (pre-migration): degrade gracefully
+    return int(rows[0]["oss_pr"]) if rows else None
+
+
 def get_pr_detail(pr_number: int, repo: str = "oss") -> dict | None:
-    def _query(num):
+    def _query(num, rp):
         return sr_query(f"""
 SELECT d.pr_number, d.repo, d.title, d.author, d.module, d.change_type, d.version,
        d.ai_summary, d.ai_summary_en, d.diff_keywords, d.searchable_text,
        d.body, d.merged_at, d.additions,
        d.deletions, d.changed_files
 FROM pr_data d
-WHERE d.pr_number = {num} AND d.repo = '{repo}'
+WHERE d.pr_number = {num} AND d.repo = '{rp}'
 LIMIT 1;
 """)
 
-    rows = _query(pr_number)
+    match_kind = None
+    rows = _query(pr_number, repo)
     if not rows:
         main_pr = resolve_backport_pr(pr_number, repo)
         if main_pr:
-            rows = _query(main_pr)
-        if not rows:
-            return None
+            rows = _query(main_pr, repo)
+            if rows:
+                match_kind = "backport"
+    if not rows and repo != "oss":
+        # An enterprise sync PR (main sync or its branch backport) isn't in pr_data; resolve to the
+        # oss PR it mirrors (via pr_sync), then through any oss backport -> oss main.
+        ent_bp = resolve_backport_pr(pr_number, repo)
+        oss = resolve_sync_oss_pr(ent_bp or pr_number, repo) or resolve_sync_oss_pr(pr_number, repo)
+        if oss:
+            oss_bp = resolve_backport_pr(oss, "oss")
+            rows = _query(oss_bp or oss, "oss")
+            if rows:
+                repo = "oss"   # result is now an oss PR -> drive the oss ent_syncs branch below
+                match_kind = "backport sync" if (ent_bp or oss_bp) else "sync"
+    if not rows:
+        return None
 
     result = attach_versions(rows)[0]
+    if match_kind:
+        result["query_match"] = {"typed": pr_number, "kind": match_kind}
     result["github_url"] = f"https://github.com/{_slug(repo)}/pull/{result['pr_number']}"
 
     if repo == "oss":
@@ -545,6 +574,7 @@ h1 { text-align: center; margin: 20px 0; color: #1a73e8; font-size: 24px; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 4px;
          font-size: 11px; font-weight: 500; }
 .badge-module { background: #eceef0; color: #5f6570; }
+.badge-match { background: #fef3e0; color: #8a5000; }
 .badge-type { background: #fce8e6; color: #c5221f; }
 .badge-version { background: #eff8f3; color: #137333; }
 .badge-score { background: #ede7f6; color: #5e35b1; }
@@ -977,6 +1007,7 @@ function renderResultsIn(results, showScore, container) {
                 <a class="pr-number" href="${pUrl}" target="_blank">#${r.pr_number}</a>
                 <span class="pr-title">${escHtml(r.title)}</span>
                 ${r.module ? `<span class="badge badge-module">${escHtml(r.module)}</span>` : ''}
+                ${r.query_match ? `<span class="badge badge-match">${escHtml(r.query_match.kind)}</span>` : ''}
             </div>
             <div class="result-header xrepo">${crossRepoRow(r, scoreHtml)}</div>
             <div class="meta">
@@ -1510,34 +1541,76 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return repo
 
     def _build_pr_number_clause(self, params, repo):
-        """Resolve pr_number (with per-repo backport resolution) into a SQL condition on d."""
+        """Resolve pr_number into (sql_clause, resolution). Cases: (1) direct pr_data hit;
+        (2) a backport PR -> its main PR (per repo, via pr_versions); (3) an enterprise sync PR
+        (main sync or its release-branch backport) which is NOT in pr_data -> the oss PR it synced
+        (via pr_sync), itself resolved through any oss backport -> oss main. `resolution` maps a
+        resolved (pr_number, repo) -> {"typed": N, "kind": "backport"|"sync"|"backport sync"} so the
+        UI can annotate how the typed number relates to that result (direct hits are omitted)."""
         pr_number = params.get("pr_number", "")
         if not pr_number:
-            return ""
+            return "", {}
         try:
             pn = int(pr_number)
         except (TypeError, ValueError):
             raise ValueError("pr_number must be an integer")
         repos = [repo] if repo in REPOS else list(REPOS)
-        parts = []
+        candidates = set()   # (pr_number, repo) pairs to match against pr_data
+        resolution = {}      # resolved (pr_number, repo) -> {"typed", "kind"}
         for r in repos:
-            resolved = resolve_backport_pr(pn, r) or pn
-            parts.append(f"(d.pr_number = {resolved} AND d.repo = '{r}')")
-        return "(" + " OR ".join(parts) + ")"
+            bp_main = resolve_backport_pr(pn, r)   # None unless pn is a backport PR in repo r
+            main = bp_main or pn
+            candidates.add((pn, r))
+            candidates.add((main, r))
+            if bp_main and bp_main != pn:
+                resolution[(main, r)] = {"typed": pn, "kind": "backport"}
+            if r != "oss":
+                # An enterprise sync PR (main sync or its branch backport) isn't in pr_data; the
+                # content lives on the oss PR it mirrors (via pr_sync). That oss PR may itself be an
+                # oss branch backport (also not in pr_data), so resolve it once more to its oss main.
+                oss = resolve_sync_oss_pr(main, r) or resolve_sync_oss_pr(pn, r)
+                if oss:
+                    oss_bp_main = resolve_backport_pr(oss, "oss")
+                    oss_main = oss_bp_main or oss
+                    candidates.add((oss_main, "oss"))
+                    kind = "backport sync" if (bp_main or oss_bp_main) else "sync"
+                    resolution[(oss_main, "oss")] = {"typed": pn, "kind": kind}
+        parts = [f"(d.pr_number = {n} AND d.repo = '{rp}')" for n, rp in sorted(candidates)]
+        return "(" + " OR ".join(parts) + ")", resolution
 
     def _search_filters(self, params):
         filters = {k: params.get(k, "") for k in
                    ("module", "change_type", "version", "author", "since", "until")}
         filters["repo"] = self._parse_repo(params)
-        filters["pr_number_clause"] = self._build_pr_number_clause(params, filters["repo"])
+        filters["pr_number_clause"], filters["pr_number_resolution"] = self._build_pr_number_clause(params, filters["repo"])
+        if filters["pr_number_clause"]:
+            # The clause already scopes repo per candidate (incl. cross-repo sync resolution to an
+            # oss PR); a standalone d.repo filter would exclude that resolved oss PR, so drop it.
+            filters["repo"] = "all"
         return filters
 
     def _filter_filters(self, params):
         filters = {k: params.get(k, "") for k in
                    ("module", "change_type", "version", "author", "since", "until", "keyword", "match_mode")}
         filters["repo"] = self._parse_repo(params)
-        filters["pr_number_clause"] = self._build_pr_number_clause(params, filters["repo"])
+        filters["pr_number_clause"], filters["pr_number_resolution"] = self._build_pr_number_clause(params, filters["repo"])
+        if filters["pr_number_clause"]:
+            # The clause already scopes repo per candidate (incl. cross-repo sync resolution to an
+            # oss PR); a standalone d.repo filter would exclude that resolved oss PR, so drop it.
+            filters["repo"] = "all"
         return filters
+
+    def _attach_query_match(self, results, filters):
+        """Annotate each result reached via pr-number resolution with how the typed number relates
+        to it: backport / sync / backport sync. Direct hits get no annotation."""
+        res = filters.get("pr_number_resolution")
+        if not res:
+            return results
+        for r in results:
+            info = res.get((int(r["pr_number"]), r.get("repo", "oss")))
+            if info:
+                r["query_match"] = info
+        return results
 
     def _resolve_text_arg(self, params, primary: str) -> str:
         aliases = [primary]
@@ -1558,7 +1631,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             top_k = self._parse_top_k(params)
             filters = self._search_filters(params)
-            results = attach_sync(attach_versions(search_vector(query, top_k, filters)))
+            results = self._attach_query_match(attach_sync(attach_versions(search_vector(query, top_k, filters))), filters)
             self._json({"results": results})
         except ValueError as e:
             self._json({"error": str(e)}, 400)
@@ -1574,7 +1647,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         top_k = 5
         try:
             filters = self._search_filters(params)
-            results = attach_sync(attach_versions(search_vector(query, top_k, filters)))
+            results = self._attach_query_match(attach_sync(attach_versions(search_vector(query, top_k, filters))), filters)
             analysis = ollama_analyze_fix(query, results)
             self._json({"analysis": analysis, "results": results})
         except ValueError as e:
@@ -1587,7 +1660,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             top_k = self._parse_top_k(params)
             filters = self._filter_filters(params)
             filters["keyword"] = self._resolve_text_arg(params, "keyword")
-            results = attach_sync(attach_versions(search_sql(filters, top_k)))
+            results = self._attach_query_match(attach_sync(attach_versions(search_sql(filters, top_k))), filters)
             self._json({"results": results})
         except ValueError as e:
             self._json({"error": str(e)}, 400)
@@ -1610,8 +1683,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not result:
                 self._json({"error": "pr not found"}, 404)
                 return
-            if int(result["pr_number"]) != pr_number:
-                result["resolved_from_backport_pr"] = pr_number
             self._json({"result": result})
         except ValueError as e:
             self._json({"error": str(e)}, 400)

@@ -63,7 +63,7 @@ description: 用户给出 StarRocks 的 crash 堆栈、报错信息、异常现�
 
 PR 详情。
 
-- `repo`：`oss` / `cd` / `ms`，默认 `oss`。**候选来自哪个仓库就必须传对应的 `repo`**——不传时默认查开源仓库：如果该编号只在某个企业仓库里存在，会返回 404 `pr not found`；如果多个仓库恰好有同号但内容不同的 PR（各仓 PR 号区间有重叠，是已知场景），会静默返回默认那个（oss），不会有任何提示。
+- `repo`：`oss` / `cd` / `ms`，默认 `oss`。**候选来自哪个仓库就传对应的 `repo`**。传入编号会按需自动解析：backport 号 → 其主 PR；企业仓的 **sync / 分支 backport 号**（不在 `pr_data`）→ 它对应的**开源主 PR**（返回 `repo=oss` 结果 + `query_match`，见下）。只有在指定 `repo` 里既查不到、又无法解析时才返回 404 `pr not found`。多个仓恰有同号但不同的 PR（号区间重叠）时，只在你传的 `repo` 内匹配。
 - 返回 `{"result": {...}}`，包含：
   - `pr_number`, `repo`, `title`, `author`, `module`, `change_type`
   - `ai_summary`, `ai_summary_en`, `diff_keywords`, `searchable_text`
@@ -71,8 +71,8 @@ PR 详情。
   - `versions`：对象数组，格式同上
   - `github_url`
   - `repo=oss` 时含 `ent_syncs`：`[{"ent_pr": 59488, "ent_repo": "ms", "version": "4.1-ee", "via_oss_pr": 76640, "ent_versions": [{"version": "4.1", "backport_pr": 59500}]}]`，该 PR 及其 backport PR 已同步到企业版的落点（`ent_repo` 区分 `cd`/`ms`；`ent_versions` 为该企业 sync PR 在企业仓内的分支 backport 落点）；字段与 `/api/agent/search` 的 `ent_syncs` 一致
-  - `repo=cd|ms`（企业仓库）时含 `synced_from`：`[{"oss_pr": 76640, "version": "4.1-ee"}]`，该 PR 是否是从某个开源 PR 同步落地的；通常为空——因为 `sync` / `backport` / `conflict_fix` 三类都不会被 enrich，不会进入 `pr_data`，也就查不到详情（能查到详情的企业 PR 只有 `exclusive`（企业独有）一类，本身就不是开源同步）
-  - 输入的编号是 backport PR 号时，会在对应 `repo` 内自动反查主 PR：返回的 `result.pr_number` 是**主 PR 号**，并附 `resolved_from_backport_pr`=你实际输入的 backport 号。结论里应同时标注主 PR 号与该 backport 号，别把返回的主 PR 号误当成你查询的那个编号
+  - `repo=cd|ms`（企业仓库）且传入号**本身就是 `pr_data` 里的 `exclusive`（企业独有）PR** 时，返回"这条企业 PR 自己"，含 `synced_from`：`[{"oss_pr": 76640, "version": "4.1-ee"}]`（它从哪个开源 PR 同步来；`exclusive` 一般为空）。若传入的是企业 **sync / backport 号**（不在 `pr_data`），则不会 404，而是解析成对应的**开源主 PR** 返回（`repo=oss`，带 `ent_syncs` 与 `query_match`）。
+  - 输入编号被解析时（backport → 主 PR，或企业 sync → 开源主 PR），`result.pr_number` / `repo` 是**解析后的目标 PR**，并附 `query_match`：`{"typed": <你输入的号>, "kind": "backport" | "sync" | "backport sync"}`——`kind` 表示你输入的号经哪条链落到该 PR（只经 pr_versions=`backport`；只经 pr_sync=`sync`；两者都经=`backport sync`）。结论里应**同时标注你输入的号与解析后的主 PR 号**，别把返回的主 PR 号误当成你查询的那个编号。直接命中时无 `query_match`。
 
 ### 代理使用
 
