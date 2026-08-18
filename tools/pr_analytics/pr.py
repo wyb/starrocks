@@ -104,7 +104,7 @@ REPOS = {
         "slug": "CelerData/celerdata-enterprise",
         "kind": "enterprise",
         "label": "CD",
-        "active": True,    # current enterprise source; daemon polls it
+        "active": False,    # not live yet
         "raw_dir": DATA_DIR / "cd" / "raw",
         "enriched_dir": DATA_DIR / "cd" / "enriched",
     },
