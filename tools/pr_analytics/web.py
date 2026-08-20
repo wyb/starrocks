@@ -354,6 +354,22 @@ def attach_versions(results: list) -> list:
     return results
 
 
+def _cd_sync_versions(oss_pr_number, versions, ent_syncs):
+    """For `cd` syncs only, replace the cd sync PR's own version (unreliable — cd sync PRs usually
+    land on main, so their base_ref-derived version is 'main' regardless of the real release) with
+    the version of the OSS PR it synced from (`via_oss_pr`), looked up in that oss PR's own
+    `versions`. Other enterprise repos (e.g. ms) keep their own version."""
+    oss_ver = {}
+    for v in (versions or []):
+        key = int(v["backport_pr"]) if v.get("backport_pr") else int(oss_pr_number)
+        oss_ver[key] = v.get("version")
+    for s in (ent_syncs or []):
+        if s.get("ent_repo") == "cd":
+            ov = oss_ver.get(s.get("via_oss_pr"))
+            if ov:
+                s["version"] = ov
+
+
 def attach_sync(results: list) -> list:
     """Attach enterprise sync landings to oss rows. A sync can land on the oss PR itself OR on one
     of its oss backport PRs (an indirect sync, e.g. oss #500 -> oss backport #600 -> CD #200), and
@@ -394,6 +410,7 @@ def attach_sync(results: list) -> list:
     for r in results:
         if r.get("repo", "oss") == "oss":
             r["ent_syncs"] = m.get(int(r["pr_number"]), [])
+            _cd_sync_versions(r["pr_number"], r.get("versions"), r["ent_syncs"])
     return results
 
 
@@ -472,6 +489,7 @@ LIMIT 1;
             for s in syncs:
                 s["ent_versions"] = ev.get((s["ent_pr"], s["ent_repo"]), [])
             result["ent_syncs"] = syncs
+            _cd_sync_versions(result["pr_number"], result.get("versions"), result["ent_syncs"])
         except Exception:
             result["ent_syncs"] = []
     else:
